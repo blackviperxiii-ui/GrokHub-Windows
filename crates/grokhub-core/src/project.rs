@@ -943,8 +943,10 @@ mod tests {
 
     #[test]
     fn create_project_does_not_reuse_tilde_tree() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/j".into());
-        let work = format!("{home}/GrokHub-Work");
+        let home = crate::user_home()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/home/j".into());
+        let work = join_home(&home, "GrokHub-Work");
         let mut nodes = vec![ProjectNode {
             id: "old".into(),
             name: "Night watch".into(),
