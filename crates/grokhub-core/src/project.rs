@@ -487,24 +487,41 @@ pub fn expand_project_root(root: &str, home: Option<&str>) -> String {
     expand_host_path_token_in(root, home).unwrap_or_else(|| root.to_string())
 }
 
+fn looks_absolute(p: &str) -> bool {
+    let p = p.trim();
+    std::path::Path::new(p).is_absolute() || p.starts_with('/')
+}
+
+fn join_home(home: &str, rest: &str) -> String {
+    let home = home.trim_end_matches(['/', '\\']);
+    let rest = rest.trim_start_matches(['/', '\\']);
+    if home.starts_with('/') {
+        format!("{home}/{rest}")
+    } else {
+        std::path::Path::new(home)
+            .join(rest)
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
 pub fn expand_host_path_token_in(tok: &str, home: Option<&str>) -> Option<String> {
     let tok = peel_host_path_token(tok);
-    if std::path::Path::new(&tok).is_absolute() {
+    if looks_absolute(&tok) {
         return Some(tok);
     }
     if tok == "$OLDPWD" || tok.starts_with("$OLDPWD/") {
         return Some("/var/empty".into());
     }
     let home = home.filter(|h| !h.is_empty())?;
-    let home = home.trim_end_matches('/');
     if let Some(rest) = tok.strip_prefix("~/") {
-        return Some(std::path::Path::new(home).join(rest).to_string_lossy().into_owned());
+        return Some(join_home(home, rest));
     }
     if let Some(rest) = tok.strip_prefix("$HOME/") {
-        return Some(std::path::Path::new(home).join(rest).to_string_lossy().into_owned());
+        return Some(join_home(home, rest));
     }
     if tok == "~" || tok == "$HOME" {
-        return Some(home.to_string());
+        return Some(home.trim_end_matches(['/', '\\']).to_string());
     }
     if let Some(rest) = tok.strip_prefix('~') {
         if !rest.is_empty() && !rest.starts_with('/') {
