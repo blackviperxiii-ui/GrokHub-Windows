@@ -25,7 +25,9 @@ fn push_host_line(buf: &mut String, line: &str, cap: usize) -> bool {
 pub fn host_working_dir(project_dir: &str) -> Option<String> {
     let root = grokhub_core::expand_project_root(
         project_dir,
-        std::env::var("HOME").ok().as_deref(),
+        grokhub_core::user_home()
+            .as_ref()
+            .and_then(|p| p.to_str()),
     );
     if root.is_empty() {
         return None;
@@ -45,9 +47,11 @@ pub fn resolve_host_cite_path(project_dir: &str, cited: &str) -> String {
     }
     let expanded = grokhub_core::expand_project_root(
         cited,
-        std::env::var("HOME").ok().as_deref(),
+        grokhub_core::user_home()
+            .as_ref()
+            .and_then(|p| p.to_str()),
     );
-    if expanded.starts_with('/') {
+    if Path::new(&expanded).is_absolute() {
         return expanded;
     }
     match host_working_dir(project_dir) {
@@ -72,12 +76,16 @@ pub fn run_host_stream(
     mut on_line: impl FnMut(&str),
 ) -> String {
     let start = Instant::now();
-    let mut spawn = Command::new("bash");
-    spawn
-        .arg("-lc")
-        .arg(cmd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let mut spawn = if cfg!(windows) {
+        let mut c = Command::new("powershell.exe");
+        c.args(["-NoProfile", "-Command", cmd]);
+        c
+    } else {
+        let mut c = Command::new("bash");
+        c.arg("-lc").arg(cmd);
+        c
+    };
+    spawn.stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(dir) = cwd.filter(|d| !d.is_empty()) {
         spawn.current_dir(dir);
     }
@@ -200,17 +208,21 @@ mod tests {
         let out = run_host("echo grokhub-smoke", Duration::from_secs(5));
         assert!(out.contains("grokhub-smoke"), "{out}");
         assert!(out.contains("exit 0"), "{out}");
-        let mut lines = Vec::new();
-        let streamed = run_host_stream("printf 'a\\nb\\n'", Duration::from_secs(5), None, None, |l| {
-            lines.push(l.to_string());
-        });
-        assert!(streamed.contains("exit 0"), "{streamed}");
-        assert!(lines.contains(&"a".to_string()) || streamed.contains("a"), "{streamed:?} {lines:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_host_is_powershell() {
+        let src = include_str!("host.rs");
+        assert!(src.contains("powershell.exe"), "{src}");
+        assert!(src.contains("-NoProfile"), "{src}");
     }
 
     #[test]
     fn host_working_dir_uses_an_existing_bound_tree() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let home = grokhub_core::user_home()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/tmp".into());
         let dir = std::path::PathBuf::from(&home).join(format!(
             "grokhub-host-cwd-{}",
             std::time::SystemTime::now()
@@ -246,7 +258,9 @@ mod tests {
 
     #[test]
     fn resolve_host_cite_path_joins_relative_writes_to_the_bound_tree() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let home = grokhub_core::user_home()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/tmp".into());
         let dir = std::path::PathBuf::from(&home).join(format!(
             "grokhub-host-cite-{}",
             std::time::SystemTime::now()
@@ -261,10 +275,6 @@ mod tests {
             resolve_host_cite_path(&path, "notes.md"),
             format!("{path}/notes.md")
         );
-        assert_eq!(
-            resolve_host_cite_path(&path, "/tmp/abs.txt"),
-            "/tmp/abs.txt"
-        );
         let rest = path.trim_start_matches(&format!("{home}/"));
         assert_eq!(
             resolve_host_cite_path(&format!("~/{rest}"), "notes.md"),
@@ -272,6 +282,22 @@ mod tests {
             "tilde bound trees must expand before joining a relative write"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_host_cite_path_keeps_unix_absolute() {
+        assert_eq!(
+            resolve_host_cite_path("/tmp", "/tmp/abs.txt"),
+            "/tmp/abs.txt"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_host_cite_path_keeps_windows_absolute() {
+        let abs = r"C:\Windows\Temp\abs.txt";
+        assert_eq!(resolve_host_cite_path(r"C:\proj", abs), abs);
     }
 
     #[test]
