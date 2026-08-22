@@ -1,7 +1,7 @@
 use crate::build_agent;
 use crate::helpers::{
     cabin_menu_should_dismiss, click_project_opens_board, collect_other_chip_threads, expand_home,
-    next_maximized, next_starter_skill_name, wants_live_repaint,
+    live_home, next_maximized, next_starter_skill_name, wants_live_repaint,
 };
 use crate::titlebar::{
     apply_tray_window, titlebar_chrome_btn, titlebar_chrome_hit, titlebar_should_start_drag,
@@ -373,11 +373,10 @@ fn cabin_fast_llm(key: String, prompt: String) -> String {
     let Some(bin) = grokhub_acp::find_grok() else {
         return String::new();
     };
-    let home = std::env::var("HOME").ok();
-    let work = match home.as_deref() {
-        Some(h) => format!("{h}/GrokHub-Work"),
-        None => "GrokHub-Work".into(),
-    };
+    let home = live_home();
+    let work = grokhub_core::user_home()
+        .map(|h| h.join("GrokHub-Work").to_string_lossy().into_owned())
+        .unwrap_or_else(|| "GrokHub-Work".into());
     let picked = resolve_acp_cwd("", home.as_deref(), &work);
     let path = std::path::PathBuf::from(picked);
     let cwd = grokhub_acp::ensure_session_cwd(&path).unwrap_or(path);
@@ -1196,9 +1195,8 @@ impl Cabin {
         }
         let mut projects = crate::store::load_projects();
         let sidebar_file = crate::store::projects_path().exists();
-        let work = std::env::var("HOME")
-            .ok()
-            .map(|home| format!("{home}/GrokHub-Work"))
+        let work = grokhub_core::user_home()
+            .map(|home| home.join("GrokHub-Work").to_string_lossy().into_owned())
             .unwrap_or_default();
         cfg.project_dir = expand_home(&restore_bound_path(&cfg.project_dir, &work, sidebar_file));
         if should_seed_sidebar(sidebar_file, &projects) {
@@ -1412,7 +1410,9 @@ impl Cabin {
             file_pick: None,
             pick_rx: None,
             pick_list_rx: None,
-            pick_dir: std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()),
+            pick_dir: live_home().unwrap_or_else(|| {
+                std::env::temp_dir().to_string_lossy().into_owned()
+            }),
             pick_cache: None,
             projects,
             project_sel,
@@ -1810,7 +1810,7 @@ impl Cabin {
     }
 
     fn grok_cwd(&self) -> std::path::PathBuf {
-        let home = std::env::var("HOME").ok();
+        let home = live_home();
         let work = self.work_root();
         let picked = resolve_acp_cwd(&self.cfg.project_dir, home.as_deref(), &work);
         std::path::PathBuf::from(picked)
@@ -2508,7 +2508,7 @@ impl Cabin {
                             up = true;
                         }
                         if crate::cards::ghost_pill(ui, "Home") {
-                            if let Ok(home) = std::env::var("HOME") {
+                            if let Some(home) = live_home() {
                                 self.pick_dir = home;
                             }
                         }
@@ -2669,11 +2669,9 @@ impl Cabin {
     }
 
     fn work_root(&self) -> String {
-        if let Ok(home) = std::env::var("HOME") {
-            format!("{home}/GrokHub-Work")
-        } else {
-            "GrokHub-Work".into()
-        }
+        grokhub_core::user_home()
+            .map(|home| home.join("GrokHub-Work").to_string_lossy().into_owned())
+            .unwrap_or_else(|| "GrokHub-Work".into())
     }
 
     fn touch_projects(&mut self) {
@@ -4214,7 +4212,7 @@ impl Cabin {
             }
             Slash::ProjectBind(path) => {
                 let raw = path.unwrap_or_else(|| self.cfg.project_dir.clone());
-                let home = std::env::var("HOME").ok();
+                let home = live_home();
                 let p = resolve_bind_path(
                     &raw,
                     &self.cfg.project_dir,
@@ -4304,9 +4302,12 @@ impl Cabin {
             Slash::Inhabit(peer) => self.queue_inhabit(peer),
             Slash::Rewind => self.rewind_project(),
             Slash::Room(name) => {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+                let home = live_home().unwrap_or_else(|| ".".into());
                 let plan = plan_room(&name, &home);
-                let p = format!("{home}/{}", plan.project_rel);
+                let p = std::path::Path::new(&home)
+                    .join(&plan.project_rel)
+                    .to_string_lossy()
+                    .into_owned();
                 let dir = p.clone();
                 std::thread::spawn(move || {
                     let _ = std::fs::create_dir_all(&dir);
@@ -4691,7 +4692,7 @@ impl Cabin {
     }
 
     fn rewind_project(&mut self) {
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = live_home().unwrap_or_default();
         let src = expand_home(self.cfg.project_dir.trim());
         if src.is_empty() {
             self.status = "Bind a project first — /project bind".into();
@@ -4725,7 +4726,7 @@ impl Cabin {
     }
 
     fn snapshot_project(&mut self) -> Option<String> {
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = live_home().unwrap_or_default();
         let src = expand_home(self.cfg.project_dir.trim());
         if !rewind_allowed(&src, &home) {
             return None;
@@ -5680,7 +5681,7 @@ impl Cabin {
             self.status = "Importing OpenClaw…".into();
             return;
         }
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = live_home().unwrap_or_default();
         let mem_name = self.mem_name.clone();
         let mem_body = self.mem_body.clone();
         let scratch = self.scratch();
@@ -7084,7 +7085,7 @@ impl Cabin {
                 continue;
             }
             if !c.trim().starts_with("COMPUTER_CMD")
-                && !is_rewind_copy_cmd_in(c, &self.cfg.project_dir, std::env::var("HOME").ok().as_deref())
+                && !is_rewind_copy_cmd_in(c, &self.cfg.project_dir, live_home().as_deref())
                 && host_cmd_leaves_project(c, &self.cfg.project_dir)
                 && self.permission_mode != PermissionMode::AlwaysApprove
             {

@@ -17,12 +17,19 @@ Copy-Item 'LICENSE' $Stage
 New-Item -ItemType Directory -Path (Join-Path $Root 'dist-release') -Force | Out-Null
 $candidates = @(
   "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+  "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
   "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
 )
 $Iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $Iscc) {
+  $cmd = Get-Command ISCC -ErrorAction SilentlyContinue
+  if ($cmd) { $Iscc = $cmd.Source }
+}
 if (-not $Iscc) { throw "Inno Setup 6 ISCC.exe not found" }
 & $Iscc "/DMyAppVersion=$Ver" (Join-Path $Root 'packaging/windows/grokhub.iss')
+$Setup = Join-Path $Root "dist-release/GrokHub-Setup-$Ver.exe"
+if (-not (Test-Path $Setup)) { throw "missing GrokHub-Setup-$Ver.exe" }
 $Zip = Join-Path $Root "dist-release/grokhub-windows-v$Ver.zip"
 Compress-Archive -Path (Join-Path $Stage '*') -DestinationPath $Zip -Force
-Write-Output (Join-Path $Root "dist-release/GrokHub-Setup-$Ver.exe")
+Write-Output $Setup
 Write-Output $Zip

@@ -378,8 +378,8 @@ pub fn wall_dir() -> PathBuf {
 }
 
 pub fn imagine_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join("GrokHub-Work/imagine");
+    if let Some(home) = grokhub_core::user_home() {
+        return home.join("GrokHub-Work").join("imagine");
     }
     config_dir().join("imagine")
 }

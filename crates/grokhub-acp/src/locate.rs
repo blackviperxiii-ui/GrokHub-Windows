@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex, OnceLock};
@@ -335,36 +336,50 @@ pub fn grok_stdout_timeout(bin: &Path, cwd: &Path, args: &[&str], secs: u64) -> 
     let bin = bin.to_path_buf();
     let cwd = cwd.to_path_buf();
     let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let child = Command::new(&bin)
+    let mut child = Command::new(&bin)
         .args(&owned)
         .current_dir(&cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| e.to_string())?;
-    let pid = child.id();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let out = child.wait_with_output();
-        let _ = tx.send(out);
+        let mut so = Vec::new();
+        let mut se = Vec::new();
+        if let Some(mut o) = stdout {
+            let _ = o.read_to_end(&mut so);
+        }
+        if let Some(mut e) = stderr {
+            let _ = e.read_to_end(&mut se);
+        }
+        let _ = tx.send((so, se));
     });
-    let out = match rx.recv_timeout(Duration::from_secs(secs.max(1))) {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => return Err(e.to_string()),
+    let (so, se) = match rx.recv_timeout(Duration::from_secs(secs.max(1))) {
+        Ok(bufs) => bufs,
         Err(_) => {
-            let _ = Command::new("kill")
-                .args(["-TERM", &pid.to_string()])
-                .status();
-            thread::sleep(Duration::from_millis(80));
-            let _ = Command::new("kill")
-                .args(["-KILL", &pid.to_string()])
-                .status();
+            #[cfg(unix)]
+            {
+                let pid = child.id();
+                let _ = Command::new("kill")
+                    .args(["-TERM", &pid.to_string()])
+                    .status();
+                thread::sleep(Duration::from_millis(80));
+                let _ = Command::new("kill")
+                    .args(["-KILL", &pid.to_string()])
+                    .status();
+            }
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(format!("grok {} timed out", args.join(" ")));
         }
     };
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    if !out.status.success() && stdout.is_empty() {
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&so).trim().to_string();
+    let stderr = String::from_utf8_lossy(&se).trim().to_string();
+    if !status.success() && stdout.is_empty() {
         return Err(if stderr.is_empty() {
             format!("grok {} failed", args.join(" "))
         } else {

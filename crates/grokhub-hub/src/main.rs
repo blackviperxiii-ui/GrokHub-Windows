@@ -8,8 +8,15 @@ fn persist_path() -> PathBuf {
     if let Ok(p) = env::var("GROKHUB_CONFIG") {
         return PathBuf::from(p).join("hub-state.json");
     }
-    if let Ok(home) = env::var("HOME") {
-        return PathBuf::from(home).join(".config/GrokHub/hub-state.json");
+    if cfg!(windows) {
+        if let Ok(app) = env::var("APPDATA") {
+            if !app.trim().is_empty() {
+                return PathBuf::from(app).join("GrokHub").join("hub-state.json");
+            }
+        }
+    }
+    if let Some(home) = grokhub_core::user_home() {
+        return home.join(".config").join("GrokHub").join("hub-state.json");
     }
     PathBuf::from("hub-state.json")
 }

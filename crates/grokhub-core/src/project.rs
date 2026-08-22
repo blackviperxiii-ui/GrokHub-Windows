@@ -97,7 +97,7 @@ pub fn create_project(
         return Err("id taken");
     }
     let mut path = project_work_path(work_root, &name);
-    let home = std::env::var("HOME").ok();
+    let home = live_home();
     if nodes
         .iter()
         .any(|n| bound_paths_match(&n.path, &path, home.as_deref()))
@@ -151,7 +151,7 @@ pub fn settle_project_path(
     }
     let name = node.name.clone();
     let mut path = project_work_path(work_root, &name);
-    let home = std::env::var("HOME").ok();
+    let home = live_home();
     if nodes
         .iter()
         .any(|n| n.id != id && bound_paths_match(&n.path, &path, home.as_deref()))
@@ -226,13 +226,13 @@ pub fn bound_paths_match(a: &str, b: &str, home: Option<&str>) -> bool {
     !a.is_empty() && a == b
 }
 
+fn live_home() -> Option<String> {
+    crate::user_home().map(|h| h.to_string_lossy().into_owned())
+}
+
 pub fn drop_selected(nodes: &mut Vec<ProjectNode>, id: &str, bound_path: &str) -> DropOutcome {
-    drop_selected_in(
-        nodes,
-        id,
-        bound_path,
-        std::env::var("HOME").ok().as_deref(),
-    )
+    let home = live_home();
+    drop_selected_in(nodes, id, bound_path, home.as_deref())
 }
 
 pub fn drop_selected_in(
@@ -417,11 +417,8 @@ pub fn folder_choices(nodes: &[ProjectNode]) -> Vec<(String, String)> {
 }
 
 pub fn upsert_bound(nodes: &mut Vec<ProjectNode>, bound_path: &str) -> Option<String> {
-    upsert_bound_in(
-        nodes,
-        bound_path,
-        std::env::var("HOME").ok().as_deref(),
-    )
+    let home = live_home();
+    upsert_bound_in(nodes, bound_path, home.as_deref())
 }
 
 pub fn upsert_bound_in(
@@ -470,7 +467,8 @@ pub fn project_name_from_path(p: &str) -> String {
 }
 
 pub fn expand_host_path_token(tok: &str) -> Option<String> {
-    expand_host_path_token_in(tok, std::env::var("HOME").ok().as_deref())
+    let home = live_home();
+    expand_host_path_token_in(tok, home.as_deref())
 }
 
 fn peel_host_path_token(tok: &str) -> String {
@@ -542,7 +540,8 @@ fn looks_like_host_path(tok: &str) -> bool {
 }
 
 pub fn host_cmd_leaves_project(cmd: &str, project_root: &str) -> bool {
-    host_cmd_leaves_project_in(cmd, project_root, std::env::var("HOME").ok().as_deref())
+    let home = live_home();
+    host_cmd_leaves_project_in(cmd, project_root, home.as_deref())
 }
 
 fn host_cmd_name(tok: &str) -> &str {

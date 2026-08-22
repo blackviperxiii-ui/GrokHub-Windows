@@ -594,7 +594,9 @@ pub fn resolve_bin(name: &str) -> Option<PathBuf> {
     resolve_bin_in(
         name,
         std::env::var("PATH").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
+        grokhub_core::user_home()
+            .as_ref()
+            .and_then(|p| p.to_str()),
     )
 }
 
@@ -2112,19 +2114,22 @@ mod tests {
 
     #[test]
     fn run_limited_kills_a_hung_desktop_command() {
-        let mut cmd = Command::new("sleep");
-        cmd.arg("30");
-        let started = Instant::now();
-        let out = run_limited(cmd, Duration::from_millis(250));
-        assert!(
-            out.is_none(),
-            "hung desktop spawn must time out, got {out:?}"
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(3),
-            "UI-thread desktop spawn must not wait out the child: {:?}",
-            started.elapsed()
-        );
+        #[cfg(unix)]
+        {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("30");
+            let started = Instant::now();
+            let out = run_limited(cmd, Duration::from_millis(250));
+            assert!(
+                out.is_none(),
+                "hung desktop spawn must time out, got {out:?}"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "UI-thread desktop spawn must not wait out the child: {:?}",
+                started.elapsed()
+            );
+        }
         let limited = include_str!("desktop.rs")
             .split("pub(crate) fn run_limited(")
             .nth(1)
@@ -2138,14 +2143,17 @@ mod tests {
             limited.contains("IMAGE_FILE_CAP"),
             "run_limited must stop reading past IMAGE_FILE_CAP: {limited}"
         );
-        let mut dump = Command::new("head");
-        dump.args(["-c", &(IMAGE_FILE_CAP + 2 * 1024 * 1024).to_string(), "/dev/zero"]);
-        let out = run_limited(dump, Duration::from_secs(3)).expect("head exited");
-        assert!(
-            out.stdout.len() as u64 <= IMAGE_FILE_CAP + 1,
-            "huge stdout must stay capped, got {}",
-            out.stdout.len()
-        );
+        #[cfg(unix)]
+        {
+            let mut dump = Command::new("head");
+            dump.args(["-c", &(IMAGE_FILE_CAP + 2 * 1024 * 1024).to_string(), "/dev/zero"]);
+            let out = run_limited(dump, Duration::from_secs(3)).expect("head exited");
+            assert!(
+                out.stdout.len() as u64 <= IMAGE_FILE_CAP + 1,
+                "huge stdout must stay capped, got {}",
+                out.stdout.len()
+            );
+        }
     }
 
     #[test]

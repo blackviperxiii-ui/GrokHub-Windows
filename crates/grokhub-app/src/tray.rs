@@ -374,12 +374,8 @@ pub struct TrayHost {
     #[cfg(unix)]
     _keep: ksni::blocking::Handle<GrokTray>,
     #[cfg(windows)]
-    _keep: tray_icon::TrayIcon,
+    tray_tid: u32,
 }
-
-// tray-icon 0.19 TrayIcon is Rc and !Send; spawn_worker / drop_off_thread move TrayHost.
-#[cfg(windows)]
-unsafe impl Send for TrayHost {}
 
 impl TrayHost {
     pub fn try_recv(&self) -> Option<TrayCmd> {
@@ -496,12 +492,17 @@ pub fn spawn() -> Option<TrayHost> {
 }
 
 #[cfg(windows)]
-pub fn spawn() -> Option<TrayHost> {
+fn windows_tray_thread(ready: mpsc::Sender<Option<TrayHost>>) {
     if !tray_wanted() {
-        return None;
+        let _ = ready.send(None);
+        return;
     }
     use tray_icon::menu::{Menu, MenuEvent, MenuItem};
     use tray_icon::{Icon, TrayIconBuilder};
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, GetMessageW, TranslateMessage, MSG,
+    };
     let (tx, rx) = mpsc::channel();
     let show = MenuItem::new("Show cabin", true, None);
     let halt = MenuItem::new("Halt", true, None);
@@ -510,13 +511,25 @@ pub fn spawn() -> Option<TrayHost> {
     let _ = menu.append(&show);
     let _ = menu.append(&halt);
     let _ = menu.append(&quit);
-    let icon = Icon::from_rgba(vec![232, 168, 96, 255].repeat(22 * 22), 22, 22).ok()?;
-    let tray = TrayIconBuilder::new()
+    let icon = match Icon::from_rgba(vec![232, 168, 96, 255].repeat(22 * 22), 22, 22) {
+        Ok(i) => i,
+        Err(_) => {
+            let _ = ready.send(None);
+            return;
+        }
+    };
+    let tray = match TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("GrokHub")
         .with_icon(icon)
         .build()
-        .ok()?;
+    {
+        Ok(t) => t,
+        Err(_) => {
+            let _ = ready.send(None);
+            return;
+        }
+    };
     let show_id = show.id().clone();
     let halt_id = halt.id().clone();
     let quit_id = quit.id().clone();
@@ -536,7 +549,18 @@ pub fn spawn() -> Option<TrayHost> {
             }
         }
     });
-    Some(TrayHost { rx, _keep: tray })
+    let tray_tid = unsafe { GetCurrentThreadId() };
+    if ready.send(Some(TrayHost { rx, tray_tid })).is_err() {
+        return;
+    }
+    unsafe {
+        let mut msg = std::mem::zeroed::<MSG>();
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    drop(tray);
 }
 
 /// ksni `spawn()` `block_on`s session-bus setup on the caller. Never do that
@@ -556,7 +580,22 @@ where
 }
 
 pub fn begin_tray_spawn() -> mpsc::Receiver<Option<TrayHost>> {
-    spawn_worker(spawn)
+    #[cfg(unix)]
+    {
+        spawn_worker(spawn)
+    }
+    #[cfg(windows)]
+    {
+        let (tx, rx) = mpsc::channel();
+        let _ = thread::Builder::new()
+            .name("grokhub-tray".into())
+            .spawn(move || windows_tray_thread(tx));
+        rx
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        spawn_worker(|| None)
+    }
 }
 
 pub fn take_spawn_result<T>(rx: &mpsc::Receiver<T>) -> Option<T> {
@@ -583,6 +622,13 @@ impl Drop for TrayHost {
         #[cfg(unix)]
         {
             let _ = self._keep.shutdown();
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+            unsafe {
+                let _ = PostThreadMessageW(self.tray_tid, WM_QUIT, 0, 0);
+            }
         }
     }
 }
@@ -853,7 +899,17 @@ mod tests {
         let src = include_str!("tray.rs");
         assert!(src.contains("struct TrayHost"));
         #[cfg(windows)]
-        assert!(src.contains("tray_icon"), "{src}");
+        {
+            assert!(src.contains("tray_icon"), "{src}");
+            assert!(
+                !src.contains("unsafe impl Send for TrayHost"),
+                "TrayIcon is !Send; keep it on the grokhub-tray thread: {src}"
+            );
+            assert!(
+                src.contains("GetMessageW"),
+                "the tray thread must pump Win32 messages: {src}"
+            );
+        }
         #[cfg(unix)]
         assert!(src.contains("ksni"), "{src}");
     }

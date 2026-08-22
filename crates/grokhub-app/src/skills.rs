@@ -181,6 +181,7 @@ mod tests {
         std::env::remove_var("GROKHUB_CONFIG");
     }
 
+    #[cfg(unix)]
     #[test]
     fn verify_runs_in_the_bound_tree() {
         let _g = crate::config::TEST_CONFIG_LOCK.lock().unwrap();
