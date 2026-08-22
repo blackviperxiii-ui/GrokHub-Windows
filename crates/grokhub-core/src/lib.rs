@@ -36,6 +36,7 @@ pub mod oauth;
 pub mod openclaw;
 pub mod organs;
 pub mod pair;
+pub mod paths;
 pub mod project;
 pub mod recipe;
 pub mod redact;
@@ -266,6 +267,7 @@ pub use oauth::{
     TOKEN_REFRESH_SKEW_MS, XAI_DEVICE_CODE_GRANT, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_DISCOVERY,
     XAI_OAUTH_ISSUER, XAI_OAUTH_SCOPE, XAI_OAUTH_USERINFO,
 };
+pub use paths::user_home;
 pub use project::{
     add_to_folder, clean_project_name, create_folder, create_project, drop_node, drop_selected,
     folder_choices, expand_host_path_token, expand_project_root, host_cmd_leaves_project, host_hour_blocked,

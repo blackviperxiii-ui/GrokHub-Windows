@@ -491,7 +491,7 @@ pub fn expand_project_root(root: &str, home: Option<&str>) -> String {
 
 pub fn expand_host_path_token_in(tok: &str, home: Option<&str>) -> Option<String> {
     let tok = peel_host_path_token(tok);
-    if tok.starts_with('/') {
+    if std::path::Path::new(&tok).is_absolute() {
         return Some(tok);
     }
     if tok == "$OLDPWD" || tok.starts_with("$OLDPWD/") {
@@ -500,10 +500,10 @@ pub fn expand_host_path_token_in(tok: &str, home: Option<&str>) -> Option<String
     let home = home.filter(|h| !h.is_empty())?;
     let home = home.trim_end_matches('/');
     if let Some(rest) = tok.strip_prefix("~/") {
-        return Some(format!("{home}/{rest}"));
+        return Some(std::path::Path::new(home).join(rest).to_string_lossy().into_owned());
     }
     if let Some(rest) = tok.strip_prefix("$HOME/") {
-        return Some(format!("{home}/{rest}"));
+        return Some(std::path::Path::new(home).join(rest).to_string_lossy().into_owned());
     }
     if tok == "~" || tok == "$HOME" {
         return Some(home.to_string());
@@ -630,6 +630,12 @@ pub fn refund_host_reserved(count: u32, reserved: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expand_project_root_keeps_windows_drive_paths() {
+        let p = expand_project_root(r"C:\Users\viper\proj", Some(r"C:\Users\viper"));
+        assert!(p.starts_with("C:") || p.contains("Users"), "{p}");
+    }
 
     #[test]
     fn bound_tree_and_cap() {

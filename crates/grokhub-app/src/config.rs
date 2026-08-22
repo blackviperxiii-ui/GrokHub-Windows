@@ -172,8 +172,15 @@ pub fn config_dir() -> PathBuf {
 }
 
 fn dirs_fallback() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".config/GrokHub");
+    if cfg!(windows) {
+        if let Ok(app) = std::env::var("APPDATA") {
+            if !app.trim().is_empty() {
+                return PathBuf::from(app).join("GrokHub");
+            }
+        }
+    }
+    if let Some(home) = grokhub_core::user_home() {
+        return home.join(".config/GrokHub");
     }
     PathBuf::from(".grokhub")
 }
@@ -596,6 +603,67 @@ mod tests {
                 slice.contains("read_file_capped") && !slice.contains("read_to_string"),
                 "boot must not slurp a huge {name}: {slice}"
             );
+        }
+    }
+
+    #[test]
+    fn dirs_fallback_windows_shaped() {
+        let _g = TEST_CONFIG_LOCK.lock().unwrap();
+        let src = include_str!("config.rs");
+        let fallback = src
+            .split("fn dirs_fallback()")
+            .nth(1)
+            .and_then(|s| s.split("pub fn memory_dir(").next())
+            .expect("dirs_fallback");
+        assert!(
+            fallback.contains("APPDATA") && fallback.contains("GrokHub"),
+            "Windows dirs_fallback must use %APPDATA%\\GrokHub: {fallback}"
+        );
+        assert!(
+            fallback.contains("user_home"),
+            "dirs_fallback must fall back through user_home: {fallback}"
+        );
+
+        let old_cfg = std::env::var_os("GROKHUB_CONFIG");
+        let old_home = std::env::var_os("HOME");
+        let old_up = std::env::var_os("USERPROFILE");
+        let old_app = std::env::var_os("APPDATA");
+        std::env::remove_var("GROKHUB_CONFIG");
+
+        #[cfg(windows)]
+        {
+            std::env::set_var("APPDATA", r"C:\Users\viper\AppData\Roaming");
+            let d = config_dir();
+            assert!(
+                d.ends_with("GrokHub")
+                    && d.to_string_lossy().contains("AppData"),
+                "{d:?}"
+            );
+        }
+
+        #[cfg(not(windows))]
+        {
+            std::env::remove_var("HOME");
+            std::env::set_var("USERPROFILE", "/tmp/win-shaped-home");
+            let d = config_dir();
+            assert_eq!(d, PathBuf::from("/tmp/win-shaped-home/.config/GrokHub"));
+        }
+
+        match old_cfg {
+            Some(v) => std::env::set_var("GROKHUB_CONFIG", v),
+            None => std::env::remove_var("GROKHUB_CONFIG"),
+        }
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        match old_app {
+            Some(v) => std::env::set_var("APPDATA", v),
+            None => std::env::remove_var("APPDATA"),
         }
     }
 }
