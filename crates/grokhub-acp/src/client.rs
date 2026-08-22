@@ -4,7 +4,10 @@ use crate::protocol::{
     session_load_params, session_new_params, AcpEvent, JsonRpc,
 };
 use crate::protocol::SessionMode;
-use crate::{agent_args, find_grok, grok_home, grok_stdout_timeout};
+use crate::{
+    agent_args, cabin_leader_socket, find_grok, grok_home, grok_stdout_timeout,
+    prepare_cabin_grok_home,
+};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -417,6 +420,45 @@ fn handshake(
     })
 }
 
+#[cfg(unix)]
+fn ignore_sigpipe() {
+    // SIGPIPE=13, SIG_IGN=1. exec preserves SIG_IGN, so a closed log pipe
+    // cannot kill Grok Build mid-turn.
+    extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+    unsafe {
+        let _ = signal(13, 1);
+    }
+}
+
+#[cfg(unix)]
+fn isolate_spawned_grok() {
+    ignore_sigpipe();
+    // The cabin GUI holds DRI/Wayland fds. Grok Build inherits them and its
+    // leader has SIGTERM'd the stdio child (exit 143) ~70ms after inference.
+    let mut extra = Vec::new();
+    if let Ok(dir) = std::fs::read_dir("/proc/self/fd") {
+        for ent in dir.flatten() {
+            if let Ok(n) = ent.file_name().to_string_lossy().parse::<i32>() {
+                if n > 2 {
+                    extra.push(n);
+                }
+            }
+        }
+    }
+    extern "C" {
+        fn close(fd: i32) -> i32;
+        fn setsid() -> i32;
+    }
+    unsafe {
+        for fd in extra {
+            let _ = close(fd);
+        }
+        let _ = setsid();
+    }
+}
+
 /// Spawn and handshake. Puts `XAI_API_KEY` on the child when provided.
 pub fn connect(opts: SpawnOpts) -> Result<AcpHandle, String> {
     let timeout = opts.handshake_timeout.unwrap_or(HANDSHAKE_TIMEOUT);
@@ -429,6 +471,16 @@ pub fn connect(opts: SpawnOpts) -> Result<AcpHandle, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("GROK_NO_AUTO_UPDATE", "1");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                isolate_spawned_grok();
+                Ok(())
+            });
+        }
+    }
     if let Some(key) = &opts.xai_api_key {
         if !key.is_empty() {
             cmd.env("XAI_API_KEY", key);
@@ -436,6 +488,23 @@ pub fn connect(opts: SpawnOpts) -> Result<AcpHandle, String> {
     }
     for (k, v) in &opts.extra_env {
         cmd.env(k, v);
+    }
+    // Interactive `grok` owns ~/.grok/leader.sock. Sharing it SIGTERMs this
+    // child (exit 143) when the CLI leader evicts a "stale" stdio agent.
+    if opts.args.iter().any(|a| a == "stdio")
+        && !opts.extra_env.iter().any(|(k, _)| k == "GROK_LEADER_SOCKET")
+    {
+        if let Some(sock) = cabin_leader_socket() {
+            cmd.arg("--leader-socket").arg(&sock);
+            cmd.env("GROK_LEADER_SOCKET", &sock);
+        }
+    }
+    if opts.args.iter().any(|a| a == "stdio")
+        && !opts.extra_env.iter().any(|(k, _)| k == "GROK_HOME")
+    {
+        if let Some(dir) = prepare_cabin_grok_home() {
+            cmd.env("GROK_HOME", &dir);
+        }
     }
     let mut child = cmd
         .spawn()
@@ -1383,6 +1452,22 @@ mod tests {
         assert!(
             done.contains("prompt_r") && done.contains("rpc != prompt"),
             "session/cancel result must not finish the live turn: {done}"
+        );
+    }
+
+    #[test]
+    fn isolate_spawned_grok_is_unix_only() {
+        let src = include_str!("client.rs");
+        assert!(src.contains("#[cfg(unix)]"), "pre_exec must stay unix-only");
+        let iso = src.split("fn isolate_spawned_grok").nth(1).unwrap_or("");
+        assert!(
+            iso.contains("/proc/self/fd") || iso.contains("setsid") || src.contains("fn isolate_spawned_grok"),
+            "{iso}"
+        );
+        let pre = src.split("cmd.pre_exec").next().unwrap_or("");
+        assert!(
+            pre.contains("#[cfg(unix)]"),
+            "CommandExt pre_exec must be behind cfg(unix)"
         );
     }
 }

@@ -109,6 +109,30 @@ pub fn cabin_grok_home() -> Option<PathBuf> {
     Some(cabin_config_root()?.join("grok-home"))
 }
 
+pub fn cabin_leader_socket() -> Option<PathBuf> {
+    Some(cabin_grok_home()?.join("leader.sock"))
+}
+
+/// Make `GROK_HOME` usable: directory plus auth from the real `grok login`.
+pub fn prepare_cabin_grok_home() -> Option<PathBuf> {
+    let dir = cabin_grok_home()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    if let Some(src) = grok_auth_path() {
+        let dst = dir.join("auth.json");
+        if !dst.exists() {
+            #[cfg(unix)]
+            {
+                let _ = std::os::unix::fs::symlink(&src, &dst);
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = std::fs::copy(&src, &dst);
+            }
+        }
+    }
+    Some(dir)
+}
+
 fn cabin_config_root() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("GROKHUB_CONFIG") {
         return Some(PathBuf::from(p));
