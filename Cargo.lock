@@ -1159,6 +1159,7 @@ dependencies = [
 name = "grokhub-acp"
 version = "2.6.42"
 dependencies = [
+ "grokhub-core",
  "serde",
  "serde_json",
 ]

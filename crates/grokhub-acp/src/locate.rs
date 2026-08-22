@@ -37,21 +37,29 @@ fn grok_bin_cache() -> &'static Mutex<Option<(String, Instant, Option<PathBuf>, 
     C.get_or_init(|| Mutex::new(None))
 }
 
+fn grok_bin_name() -> &'static str {
+    if cfg!(windows) { "grok.exe" } else { "grok" }
+}
+
 fn find_grok_scan() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("GROKHUB_GROK") {
         let p = PathBuf::from(p);
-        if p.is_file() {
-            return Some(p);
-        }
+        return p.is_file().then_some(p);
     }
     if let Some(p) = which("grok") {
         return Some(p);
     }
-    let home = std::env::var("HOME").ok()?;
-    for rel in ["/.local/bin/grok", "/.grok/bin/grok"] {
-        let p = PathBuf::from(format!("{home}{rel}"));
-        if p.is_file() {
-            return Some(p);
+    let home = grokhub_core::user_home()?;
+    let p = home.join(".grok").join("bin").join(grok_bin_name());
+    if p.is_file() {
+        return Some(p);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join(grok_bin_name());
+            if p.is_file() {
+                return Some(p);
+            }
         }
     }
     None
@@ -83,13 +91,41 @@ pub fn which(name: &str) -> Option<PathBuf> {
         if p.is_file() {
             return Some(p);
         }
+        if cfg!(windows) && !name.ends_with(".exe") {
+            let p = dir.join(format!("{name}.exe"));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
     }
     None
 }
 
 pub fn grok_home() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".grok"))
+    Some(grokhub_core::user_home()?.join(".grok"))
+}
+
+pub fn cabin_grok_home() -> Option<PathBuf> {
+    Some(cabin_config_root()?.join("grok-home"))
+}
+
+fn cabin_config_root() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("GROKHUB_CONFIG") {
+        return Some(PathBuf::from(p));
+    }
+    if cfg!(windows) {
+        let app = std::env::var_os("APPDATA")?;
+        return Some(PathBuf::from(app).join("GrokHub"));
+    }
+    Some(grokhub_core::user_home()?.join(".config/GrokHub"))
+}
+
+pub fn doctor_missing_hint() -> &'static str {
+    if cfg!(windows) {
+        "Grok Build CLI missing — irm https://x.ai/cli/install.ps1 | iex"
+    } else {
+        "Grok Build CLI missing — install from x.ai/cli"
+    }
 }
 
 pub fn grok_auth_path() -> Option<PathBuf> {
@@ -229,7 +265,7 @@ pub fn doctor_line_busy() -> bool {
 
 pub fn doctor_grok_line(bin: Option<&Path>) -> (bool, String) {
     if bin.is_none() {
-        return (false, "Grok Build CLI missing — install from x.ai/cli".into());
+        return (false, doctor_missing_hint().into());
     }
     if let Ok(held) = doctor_line_cache().lock() {
         if let Some((path, at, ok, text, inflight)) = held.as_ref() {
@@ -253,7 +289,7 @@ pub fn doctor_grok_line(bin: Option<&Path>) -> (bool, String) {
     };
     thread::spawn(move || {
         let (ok, text) = match &path {
-            None => (false, "Grok Build CLI missing — install from x.ai/cli".into()),
+            None => (false, doctor_missing_hint().into()),
             Some(p) => match grok_version(p) {
                 Ok(v) => (true, format!("Grok Build {v}")),
                 Err(e) => (false, format!("Grok Build present but unreadable: {e}")),
@@ -335,6 +371,85 @@ pub fn agent_args_resume(always_approve: bool, resume: Option<&str>) -> Vec<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn which_tries_exe_suffix() {
+        let dir = std::env::temp_dir().join(format!("grokhub-which-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let exe = if cfg!(windows) { "probe.exe" } else { "probe" };
+        std::fs::write(dir.join(exe), b"x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = std::fs::metadata(dir.join(exe)).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(dir.join(exe), p).unwrap();
+        }
+        let old = std::env::var_os("PATH");
+        std::env::set_var("PATH", &dir);
+        let hit = which("probe");
+        match old {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(hit.is_some(), "which(probe) must find {exe}");
+    }
+
+    #[test]
+    fn find_grok_scan_uses_userprofile_grok_bin() {
+        let prev = std::env::var_os("GROKHUB_GROK");
+        std::env::remove_var("GROKHUB_GROK");
+        let dir = std::env::temp_dir().join(format!("grokhub-grokhome-{}", std::process::id()));
+        let bin = dir.join(".grok").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let name = if cfg!(windows) { "grok.exe" } else { "grok" };
+        std::fs::write(bin.join(name), b"x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = std::fs::metadata(bin.join(name)).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(bin.join(name), p).unwrap();
+        }
+        let old_home = std::env::var_os("HOME");
+        let old_up = std::env::var_os("USERPROFILE");
+        std::env::set_var("HOME", &dir);
+        std::env::set_var("USERPROFILE", &dir);
+        let old_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", "/no/such/grokhub-path");
+        let hit = find_grok_scan();
+        match old_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_up {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        match old_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        match prev {
+            Some(v) => std::env::set_var("GROKHUB_GROK", v),
+            None => std::env::remove_var("GROKHUB_GROK"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            hit.as_ref().is_some_and(|p| p.ends_with(name)),
+            "expected {name} under ~/.grok/bin, got {hit:?}"
+        );
+    }
+
+    #[test]
+    fn doctor_missing_names_official_install() {
+        let (_, text) = doctor_grok_line(None);
+        assert!(!doctor_grok_line(None).0);
+        assert!(text.contains("x.ai/cli"), "{text}");
+        #[cfg(windows)]
+        assert!(text.contains("install.ps1"), "{text}");
+    }
 
     #[test]
     fn env_override_missing_is_none() {
