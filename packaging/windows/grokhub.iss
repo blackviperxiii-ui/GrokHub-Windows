@@ -33,8 +33,8 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Source: "stage\grokhub.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "stage\grokhub-hub.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "stage\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
-Source: "stage\grok.exe"; DestDir: "{userprofile}\.grok\bin"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "stage\agent.exe"; DestDir: "{userprofile}\.grok\bin"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "stage\grok.exe"; DestDir: "{%USERPROFILE}\.grok\bin"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "stage\agent.exe"; DestDir: "{%USERPROFILE}\.grok\bin"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\GrokHub"; Filename: "{app}\{#MyAppExeName}"
@@ -45,7 +45,7 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch GrokHub"; Flags: nowait 
 
 [Registry]
 Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
-  ValueData: "{olddata};{userprofile}\.grok\bin"; Flags: preservestringtype; \
+  ValueData: "{olddata};{%USERPROFILE}\.grok\bin"; Flags: preservestringtype; \
   Check: NeedsGrokPath
 
 [Code]
@@ -54,5 +54,5 @@ var
   P: String;
 begin
   P := GetEnv('PATH');
-  Result := Pos(ExpandConstant('{userprofile}\.grok\bin'), P) = 0;
+  Result := Pos(ExpandConstant('{%USERPROFILE}\.grok\bin'), P) = 0;
 end;
