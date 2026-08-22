@@ -1093,6 +1093,7 @@ pub struct Cabin {
     session_show_rx: Option<(String, mpsc::Receiver<String>)>,
     import_rx: Option<mpsc::Receiver<ImportOpenclawOut>>,
     inspect_text: String,
+    grok_install_rx: Option<mpsc::Receiver<Result<PathBuf, String>>>,
 }
 
 fn paint_wall_cover(
@@ -1453,6 +1454,7 @@ impl Cabin {
             session_show_rx: None,
             import_rx: None,
             inspect_text: String::new(),
+            grok_install_rx: None,
         };
         if let Ok(mgr) = GlobalHotKeyManager::new() {
             let hey = HotKey::new(Some(Modifiers::SUPER), Code::KeyG);
@@ -1468,7 +1470,42 @@ impl Cabin {
         if dropped_leftover {
             c.persist_bg();
         }
+        c.kick_grok_install_if_needed();
         c
+    }
+
+    fn kick_grok_install_if_needed(&mut self) {
+        if self.grok_install_rx.is_some() {
+            return;
+        }
+        if grokhub_acp::find_grok().is_some() {
+            return;
+        }
+        #[cfg(windows)]
+        {
+            self.status = "Installing Grok Build CLI…".into();
+            self.grok_install_rx = Some(grokhub_acp::begin_grok_install());
+        }
+    }
+
+    fn poll_grok_install(&mut self) {
+        let Some(rx) = self.grok_install_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(path)) => {
+                grokhub_acp::prepend_grok_bin_to_process_path();
+                grokhub_acp::invalidate_grok_bin_cache();
+                self.status = format!("Grok Build ready — {}", path.display());
+            }
+            Ok(Err(e)) => {
+                self.status = e;
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.grok_install_rx = Some(rx);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {}
+        }
     }
 
     fn capture_window(&mut self, ctx: &egui::Context) {
@@ -8321,6 +8358,10 @@ impl eframe::App for Cabin {
         self.poll_night_check(now_ms());
         self.poll_wall();
         self.poll_persist();
+        self.poll_grok_install();
+        if self.grok_install_rx.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
         self.poll_grok_sessions();
         self.poll_inspect();
         self.poll_history_search();
@@ -10460,7 +10501,22 @@ impl Cabin {
                                                             crate::cards::settings_note(ui, "Night always runs. Quiet hours and daily caps do not hold work.");
                                                         }
                                                         SettingsSec::Host => {
-                                                            crate::cards::settings_note(ui, &format!("{}\nInstall: curl -fsSL https://x.ai/cli/install.sh | bash\nThen grok login --device-auth. Halt cancels the ACP turn.", build_agent::grok_banner()));
+                                                            crate::cards::settings_note(ui, &format!("{}\nInstall: {}\nThen grok login. Halt cancels the ACP turn.", build_agent::grok_banner(), grokhub_acp::grok_cli_install_cmd()));
+                                                            #[cfg(windows)]
+                                                            {
+                                                                if self.grok_install_rx.is_some() {
+                                                                    crate::cards::settings_note(ui, "Installing Grok Build CLI in the background…");
+                                                                } else if grokhub_acp::find_grok().is_none()
+                                                                    && crate::cards::settings_action(
+                                                                        ui,
+                                                                        "Grok Build CLI",
+                                                                        "Downloads grok.exe with no extra console.",
+                                                                        "Install",
+                                                                    )
+                                                                {
+                                                                    self.kick_grok_install_if_needed();
+                                                                }
+                                                            }
                                                         }
                                                         SettingsSec::Imagine => {
                                                             crate::cards::settings_note(ui, &format!("Live still model: {imagine_live}. Chat models never run here."));
@@ -14155,6 +14211,10 @@ mod tests {
         assert!(
             boot.contains("persist_bg"),
             "boot leftover drop must persist off-thread or restart restores empty Chat tabs: {boot}"
+        );
+        assert!(
+            boot.contains("kick_grok_install_if_needed"),
+            "first launch must install Grok Build CLI when grok.exe is missing: {boot}"
         );
         assert!(
             src.contains("history_row_visible"),

@@ -42,6 +42,24 @@ fn grok_bin_name() -> &'static str {
     if cfg!(windows) { "grok.exe" } else { "grok" }
 }
 
+/// Hide a Windows console for spawned CLI tools (grok.exe, powershell).
+pub fn hide_windows_console(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = cmd;
+}
+
+/// Drop the grok PATH cache after a first-run install.
+pub fn invalidate_grok_bin_cache() {
+    if let Ok(mut held) = grok_bin_cache().lock() {
+        *held = None;
+    }
+}
+
 fn find_grok_scan() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("GROKHUB_GROK") {
         let p = PathBuf::from(p);
@@ -336,13 +354,14 @@ pub fn grok_stdout_timeout(bin: &Path, cwd: &Path, args: &[&str], secs: u64) -> 
     let bin = bin.to_path_buf();
     let cwd = cwd.to_path_buf();
     let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let mut child = Command::new(&bin)
-        .args(&owned)
+    let mut cmd = Command::new(&bin);
+    cmd.args(&owned)
         .current_dir(&cwd)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .stderr(Stdio::piped());
+    hide_windows_console(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let (tx, rx) = mpsc::channel();
@@ -540,6 +559,20 @@ mod tests {
         assert!(
             doc.contains("thread::spawn") && doc.contains("inflight"),
             "Settings must not freeze on grok --version: {doc}"
+        );
+        let ver = src
+            .split("pub fn grok_stdout_timeout(")
+            .nth(1)
+            .and_then(|s| s.split("pub fn agent_args(").next())
+            .expect("grok_stdout_timeout");
+        assert!(
+            ver.contains("hide_windows_console") && ver.contains("CREATE_NO_WINDOW")
+                || src.contains("hide_windows_console") && src.contains("CREATE_NO_WINDOW"),
+            "grok --version must not pop a console that kills the cabin: {ver}"
+        );
+        assert!(
+            src.contains("pub fn hide_windows_console"),
+            "Windows child spawns must share CREATE_NO_WINDOW: {src}"
         );
         let find = src
             .split("pub fn find_grok(")
