@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/grokhub-core",
+    "crates/grokhub-hub",
+    "crates/grokhub-app",
+    "crates/grokhub-ffi",
+    "crates/grokhub-acp",
+]
+
+[workspace.package]
+version = "2.6.42"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/blackviperxiii-ui/GrokHub.git"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+getrandom = "0.2"
+hex = "0.4"

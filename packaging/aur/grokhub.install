@@ -1,0 +1,30 @@
+post_install() {
+  gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+  update-desktop-database /usr/share/applications 2>/dev/null || true
+  PREFIX=/usr bash /usr/lib/grokhub/install-grok-cli.sh \
+    || echo "grok: install Grok Build CLI with curl -fsSL https://x.ai/cli/install.sh | bash"
+
+  cat <<'EOF'
+
+  GrokHub 2.6.42 (native Rust — Grok Build GUI)
+
+  Run:    grokhub
+  Hub:    grokhub-hub
+  Grok:   grok  (Grok Build CLI from https://x.ai/cli)
+  Menu:   Applications → GrokHub
+  Agent:  grok login  (or XAI_API_KEY)
+
+  Config: ~/.config/GrokHub
+  Computer-use is Grok Build's. Halt cancels the ACP turn.
+
+EOF
+}
+
+post_upgrade() {
+  post_install
+}
+
+post_remove() {
+  gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+  update-desktop-database /usr/share/applications 2>/dev/null || true
+}
