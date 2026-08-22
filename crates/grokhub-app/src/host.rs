@@ -6,6 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+pub(crate) fn hide_windows_console(cmd: &mut Command) {
+    grokhub_acp::hide_windows_console(cmd);
+}
+
 fn push_host_line(buf: &mut String, line: &str, cap: usize) -> bool {
     if buf.len() >= cap {
         return false;
@@ -85,12 +89,7 @@ pub fn run_host_stream(
             "-Command",
             cmd,
         ]);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            c.creation_flags(CREATE_NO_WINDOW);
-        }
+        hide_windows_console(&mut c);
         c
     } else {
         let mut c = Command::new("bash");
@@ -233,6 +232,10 @@ mod tests {
         let src = include_str!("host.rs");
         assert!(src.contains("powershell.exe"), "{src}");
         assert!(src.contains("-NoProfile"), "{src}");
+        assert!(
+            src.contains("hide_windows_console"),
+            "host PowerShell must not pop a console that kills the cabin: {src}"
+        );
     }
 
     #[test]

@@ -1,4 +1,9 @@
 //! GrokHub native cabin. No Electron. No Tauri.
+//!
+//! Windows Explorer/Start must not allocate a console. Closing that console
+//! kills the cabin. CLI flags attach the parent console when there is one.
+
+#![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod app;
 mod build_agent;
@@ -34,7 +39,15 @@ use grokhub_core::{doctor_lines, doctor_ok, DEFAULT_PORT, HUB_KIND};
 use std::env;
 
 fn main() {
-    match parse_args(&env::args().collect::<Vec<_>>()) {
+    let launch = parse_args(&env::args().collect::<Vec<_>>());
+    match launch {
+        Launch::Cabin | Launch::Agent => {}
+        Launch::Hub => attach_cli_console(true),
+        Launch::Version | Launch::Help | Launch::Doctor | Launch::Update | Launch::Oauth => {
+            attach_cli_console(false)
+        }
+    }
+    match launch {
         Launch::Version => {
             println!("{}", env!("CARGO_PKG_VERSION"));
         }
@@ -180,4 +193,74 @@ fn run_cabin(hidden: bool) -> eframe::Result<()> {
             Ok(Box::new(Cabin::new(hidden)))
         }),
     )
+}
+
+fn attach_cli_console(alloc_if_orphan: bool) {
+    #[cfg(windows)]
+    {
+        win_console::attach(alloc_if_orphan);
+    }
+    let _ = alloc_if_orphan;
+}
+
+#[cfg(windows)]
+mod win_console {
+    use windows_sys::Win32::System::Console::{
+        AllocConsole, AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE,
+        STD_OUTPUT_HANDLE,
+    };
+
+    #[link(name = "ucrt")]
+    extern "C" {
+        fn _open_osfhandle(osfhandle: isize, flags: i32) -> i32;
+        fn _dup2(fd1: i32, fd2: i32) -> i32;
+    }
+
+    const O_TEXT: i32 = 0x4000;
+
+    pub fn attach(alloc_if_orphan: bool) {
+        unsafe {
+            if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+                if !alloc_if_orphan {
+                    return;
+                }
+                if AllocConsole() == 0 {
+                    return;
+                }
+            }
+            bind_stdio(STD_OUTPUT_HANDLE, 1);
+            bind_stdio(STD_ERROR_HANDLE, 2);
+        }
+    }
+
+    unsafe fn bind_stdio(std_id: u32, fd: i32) {
+        let h = GetStdHandle(std_id);
+        if h.is_null() || h == (-1isize as _) {
+            return;
+        }
+        let osfh = _open_osfhandle(h as isize, O_TEXT);
+        if osfh != -1 {
+            let _ = _dup2(osfh, fd);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn windows_cabin_is_a_gui_subsystem() {
+        let src = include_str!("main.rs");
+        assert!(
+            src.contains("windows_subsystem = \"windows\""),
+            "Explorer must not attach a console that kills the cabin when closed: {src}"
+        );
+        assert!(
+            src.contains("AttachConsole"),
+            "grokhub --version from PowerShell must still print: {src}"
+        );
+        assert!(
+            src.contains("not(test)"),
+            "cargo test must keep a console: {src}"
+        );
+    }
 }

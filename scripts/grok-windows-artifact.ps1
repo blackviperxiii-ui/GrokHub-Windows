@@ -1,17 +1,56 @@
 # scripts/grok-windows-artifact.ps1
-param([Parameter(Mandatory=$true)][string]$DestDir)
+param(
+  [Parameter(Mandatory = $true)][string]$DestDir,
+  [switch]$AllowSkip
+)
 $ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+$ProgressPreference = 'SilentlyContinue'
 New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+
+function Get-GrokVersion([string]$Url) {
+  (Invoke-WebRequest -Uri $Url -UseBasicParsing).Content.Trim()
+}
+
+function Save-Grok([string]$Url, [string]$OutFile) {
+  Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+}
+
 try {
-  $ver = (Invoke-WebRequest -Uri 'https://x.ai/cli/stable' -UseBasicParsing).Content.Trim()
-  if ($ver -notmatch '^\d+\.\d+\.\d+') { throw "bad version $ver" }
-  $url = "https://x.ai/cli/grok-$ver-windows-x86_64.exe"
+  $ver = $null
+  foreach ($u in @(
+      'https://x.ai/cli/stable',
+      'https://storage.googleapis.com/grok-build-public-artifacts/cli/stable'
+    )) {
+    try {
+      $cand = Get-GrokVersion $u
+      if ($cand -match '^\d+\.\d+\.\d+') {
+        $ver = $cand
+        break
+      }
+    } catch {}
+  }
+  if (-not $ver) { throw 'could not resolve Grok Build version from x.ai/cli/stable' }
   $out = Join-Path $DestDir 'grok.exe'
-  Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+  $ok = $false
+  foreach ($url in @(
+      "https://x.ai/cli/grok-$ver-windows-x86_64.exe",
+      "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-$ver-windows-x86_64.exe"
+    )) {
+    try {
+      Save-Grok $url $out
+      $ok = $true
+      break
+    } catch {}
+  }
+  if (-not $ok) { throw "grok $ver download failed" }
   Copy-Item $out (Join-Path $DestDir 'agent.exe')
   Write-Output "bundled $ver"
   exit 0
 } catch {
-  Write-Warning "grok download skipped: $_"
-  exit 0
+  if ($AllowSkip) {
+    Write-Warning "grok download skipped: $_"
+    exit 0
+  }
+  throw
 }

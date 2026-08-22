@@ -6,7 +6,7 @@ use crate::protocol::{
 use crate::protocol::SessionMode;
 use crate::{
     agent_args, cabin_leader_socket, find_grok, grok_home, grok_stdout_timeout,
-    prepare_cabin_grok_home,
+    hide_windows_console, prepare_cabin_grok_home,
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -471,6 +471,7 @@ pub fn connect(opts: SpawnOpts) -> Result<AcpHandle, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("GROK_NO_AUTO_UPDATE", "1");
+    hide_windows_console(&mut cmd);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1176,6 +1177,20 @@ pub fn wait_event(rx: &Receiver<AcpEvent>, timeout: Duration) -> Result<AcpEvent
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acp_spawn_hides_windows_console() {
+        let src = include_str!("client.rs");
+        let connect = src
+            .split("pub fn connect(")
+            .nth(1)
+            .and_then(|s| s.split("fn write_msg(").next())
+            .unwrap_or(src);
+        assert!(
+            connect.contains("hide_windows_console"),
+            "grok agent stdio must not pop a console that kills the cabin: {connect}"
+        );
+    }
 
     #[test]
     fn spawn_opts_missing_grok() {

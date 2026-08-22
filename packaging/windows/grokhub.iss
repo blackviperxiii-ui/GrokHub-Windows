@@ -22,6 +22,7 @@ WizardStyle=modern
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+ChangesEnvironment=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -33,6 +34,8 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Source: "stage\grokhub.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "stage\grokhub-hub.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "stage\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "stage\grok.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "stage\agent.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "stage\grok.exe"; DestDir: "{%USERPROFILE}\.grok\bin"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "stage\agent.exe"; DestDir: "{%USERPROFILE}\.grok\bin"; Flags: ignoreversion skipifsourcedoesntexist
 
@@ -52,7 +55,10 @@ Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
 function NeedsGrokPath: Boolean;
 var
   P: String;
+  Bin: String;
 begin
-  P := GetEnv('PATH');
-  Result := Pos(ExpandConstant('{%USERPROFILE}\.grok\bin'), P) = 0;
+  Bin := ExpandConstant('{%USERPROFILE}\.grok\bin');
+  if not RegQueryStringValue(HKCU, 'Environment', 'Path', P) then
+    P := '';
+  Result := Pos(UpperCase(Bin), UpperCase(P)) = 0;
 end;
