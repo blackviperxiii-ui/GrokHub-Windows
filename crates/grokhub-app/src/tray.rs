@@ -1,6 +1,8 @@
 //! StatusNotifierItem tray. Close hides the cabin; the process keeps working.
 
+#[cfg(unix)]
 use ksni::blocking::TrayMethods;
+#[cfg(unix)]
 use ksni::menu::*;
 use std::env;
 use std::fs;
@@ -81,6 +83,7 @@ pub fn resolved_session_bus(
     session_file.and_then(parse_session_bus_file)
 }
 
+#[cfg(unix)]
 fn read_legacy_session_bus_file() -> Option<String> {
     let home = env::var("HOME").ok().map(PathBuf::from)?;
     let machine = fs::read_to_string("/var/lib/dbus/machine-id")
@@ -89,6 +92,11 @@ fn read_legacy_session_bus_file() -> Option<String> {
     let display = env::var("DISPLAY").unwrap_or_default();
     let path = session_bus_file_path(&home, &machine, &display)?;
     fs::read_to_string(path).ok()
+}
+
+#[cfg(not(unix))]
+fn read_legacy_session_bus_file() -> Option<String> {
+    None
 }
 
 /// Replace `autolaunch:` so StatusNotifierItem can actually register.
@@ -209,9 +217,31 @@ pub fn cabin_pid_alive(pid: u32) -> bool {
     {
         Path::new(&format!("/proc/{pid}")).exists()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        windows_pid_alive(pid)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         true
+    }
+}
+
+#[cfg(windows)]
+fn windows_pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(h, &mut code) != 0;
+        CloseHandle(h);
+        ok && code == STILL_ACTIVE as u32
     }
 }
 
@@ -341,8 +371,15 @@ pub fn force_x11_for_close_to_tray(has_display: bool, wayland_set: bool) {
 
 pub struct TrayHost {
     rx: mpsc::Receiver<TrayCmd>,
+    #[cfg(unix)]
     _keep: ksni::blocking::Handle<GrokTray>,
+    #[cfg(windows)]
+    _keep: tray_icon::TrayIcon,
 }
+
+// tray-icon 0.19 TrayIcon is Rc and !Send; spawn_worker / drop_off_thread move TrayHost.
+#[cfg(windows)]
+unsafe impl Send for TrayHost {}
 
 impl TrayHost {
     pub fn try_recv(&self) -> Option<TrayCmd> {
@@ -350,10 +387,12 @@ impl TrayHost {
     }
 }
 
+#[cfg(unix)]
 struct GrokTray {
     tx: mpsc::Sender<TrayCmd>,
 }
 
+#[cfg(unix)]
 impl ksni::Tray for GrokTray {
     fn id(&self) -> String {
         "grokhub".into()
@@ -420,6 +459,7 @@ impl ksni::Tray for GrokTray {
     }
 }
 
+#[cfg(unix)]
 fn cabin_icon() -> ksni::Icon {
     let w = 22i32;
     let h = 22i32;
@@ -442,6 +482,7 @@ fn cabin_icon() -> ksni::Icon {
     }
 }
 
+#[cfg(unix)]
 pub fn spawn() -> Option<TrayHost> {
     if !tray_wanted() {
         return None;
@@ -452,6 +493,50 @@ pub fn spawn() -> Option<TrayHost> {
         Ok(handle) => Some(TrayHost { rx, _keep: handle }),
         Err(_) => None,
     }
+}
+
+#[cfg(windows)]
+pub fn spawn() -> Option<TrayHost> {
+    if !tray_wanted() {
+        return None;
+    }
+    use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+    use tray_icon::{Icon, TrayIconBuilder};
+    let (tx, rx) = mpsc::channel();
+    let show = MenuItem::new("Show cabin", true, None);
+    let halt = MenuItem::new("Halt", true, None);
+    let quit = MenuItem::new("Quit", true, None);
+    let menu = Menu::new();
+    let _ = menu.append(&show);
+    let _ = menu.append(&halt);
+    let _ = menu.append(&quit);
+    let icon = Icon::from_rgba(vec![232, 168, 96, 255].repeat(22 * 22), 22, 22).ok()?;
+    let tray = TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_tooltip("GrokHub")
+        .with_icon(icon)
+        .build()
+        .ok()?;
+    let show_id = show.id().clone();
+    let halt_id = halt.id().clone();
+    let quit_id = quit.id().clone();
+    std::thread::spawn(move || {
+        while let Ok(ev) = MenuEvent::receiver().recv() {
+            let cmd = if ev.id == show_id {
+                TrayCmd::Show
+            } else if ev.id == halt_id {
+                TrayCmd::Halt
+            } else if ev.id == quit_id {
+                TrayCmd::Quit
+            } else {
+                continue;
+            };
+            if tx.send(cmd).is_err() {
+                break;
+            }
+        }
+    });
+    Some(TrayHost { rx, _keep: tray })
 }
 
 /// ksni `spawn()` `block_on`s session-bus setup on the caller. Never do that
@@ -495,7 +580,10 @@ pub fn drop_off_thread<T: Send + 'static>(value: T) {
 
 impl Drop for TrayHost {
     fn drop(&mut self) {
-        let _ = self._keep.shutdown();
+        #[cfg(unix)]
+        {
+            let _ = self._keep.shutdown();
+        }
     }
 }
 
@@ -751,6 +839,28 @@ mod tests {
         ));
         assert!(session_bus_is_usable("unix:abstract=/tmp/dbus-foo"));
         assert!(session_bus_is_usable("tcp:host=127.0.0.1,port=1234"));
+    }
+
+    #[test]
+    fn cabin_pid_alive_this_process() {
+        let pid = std::process::id();
+        assert!(cabin_pid_alive(pid), "own pid must look alive");
+        assert!(!cabin_pid_alive(0));
+    }
+
+    #[test]
+    fn tray_host_type_exists() {
+        let src = include_str!("tray.rs");
+        assert!(src.contains("struct TrayHost"));
+        #[cfg(windows)]
+        assert!(src.contains("tray_icon"), "{src}");
+        #[cfg(unix)]
+        assert!(src.contains("ksni"), "{src}");
+    }
+
+    #[test]
+    fn cabin_pid_alive_zero_is_dead() {
+        assert!(!cabin_pid_alive(0));
     }
 
     #[test]
