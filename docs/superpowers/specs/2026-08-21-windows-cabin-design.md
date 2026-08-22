@@ -1,6 +1,6 @@
 # Windows cabin installer
 
-**Version:** 2.6.42  
+**Version:** 2.6.43  
 **Repo:** new public `blackviperxiii-ui/GrokHub-Windows` (not the deleted Electron app)
 
 GrokHub on Windows is the same native egui cabin. Grok Build (`grok.exe` over ACP) is the agent, host shell, and computer-use. The first Windows ship is cabin-first: UI, hub, tray, Settings, and Grok Build. No Windows AT-SPI / screenshot / click backends.

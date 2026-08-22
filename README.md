@@ -2,11 +2,11 @@
 
 Native Rust cabin (egui). Not Electron. Not Tauri.
 
-**v2.6.42** — per-user installer. Grok Build (`grok.exe`) is the agent and computer-use.
+**v2.6.43** — per-user installer. Grok Build (`grok.exe`) is the agent and computer-use.
 
 ## Install
 
-1. Download **GrokHub-Setup-2.6.42.exe** from [Releases](https://github.com/blackviperxiii-ui/GrokHub-Windows/releases/latest).
+1. Download **GrokHub-Setup-2.6.43.exe** from [Releases](https://github.com/blackviperxiii-ui/GrokHub-Windows/releases/latest).
 2. Run it (no admin). Installs to `%LOCALAPPDATA%\Programs\GrokHub`.
 3. Launch GrokHub. First launch installs Grok Build CLI if it is missing (no extra terminal). Close hides to the tray; Quit from the tray.
 
