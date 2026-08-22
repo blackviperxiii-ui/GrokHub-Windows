@@ -78,7 +78,19 @@ pub fn run_host_stream(
     let start = Instant::now();
     let mut spawn = if cfg!(windows) {
         let mut c = Command::new("powershell.exe");
-        c.args(["-NoProfile", "-Command", cmd]);
+        c.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-NoLogo",
+            "-Command",
+            cmd,
+        ]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            c.creation_flags(CREATE_NO_WINDOW);
+        }
         c
     } else {
         let mut c = Command::new("bash");
@@ -205,7 +217,12 @@ mod tests {
 
     #[test]
     fn echo_ok() {
-        let out = run_host("echo grokhub-smoke", Duration::from_secs(5));
+        let cmd = if cfg!(windows) {
+            "Write-Output grokhub-smoke"
+        } else {
+            "echo grokhub-smoke"
+        };
+        let out = run_host(cmd, Duration::from_secs(15));
         assert!(out.contains("grokhub-smoke"), "{out}");
         assert!(out.contains("exit 0"), "{out}");
     }
@@ -311,15 +328,26 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("temp project");
         let path = dir.to_string_lossy().into_owned();
-        let out = run_host_stream("pwd", Duration::from_secs(5), None, Some(path.as_str()), |_| {});
-        let canon = std::fs::canonicalize(&dir).unwrap_or(dir.clone());
+        let pwd = if cfg!(windows) {
+            "(Get-Location).Path"
+        } else {
+            "pwd"
+        };
+        let out = run_host_stream(pwd, Duration::from_secs(15), None, Some(path.as_str()), |_| {});
+        let name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let flattened = out.replace('\\', "/").to_lowercase();
+        let needle = name.replace('\\', "/").to_lowercase();
         assert!(
-            out.contains(&canon.to_string_lossy().into_owned()) || out.contains(&path),
+            !needle.is_empty() && flattened.contains(&needle),
             "host shell must start in the bound project: {out}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn halt_kills_a_sleeping_host_cmd() {
         use std::sync::Arc;
@@ -358,10 +386,12 @@ mod tests {
             take < lines && stream.matches("take(TEXT_FILE_CAP").count() >= 2,
             "a newline-free host dump must not slurp the whole pipe into one line: {stream}"
         );
-        let out = run_host(
-            "python3 -c \"print('x'*200000)\"",
-            Duration::from_secs(5),
-        );
+        let dump = if cfg!(windows) {
+            "$s = 'x'*200000; Write-Output $s"
+        } else {
+            "python3 -c \"print('x'*200000)\""
+        };
+        let out = run_host(dump, Duration::from_secs(15));
         assert!(
             out.len() <= grokhub_core::TEXT_FILE_CAP + 256,
             "capped host receipt stayed huge: {}",

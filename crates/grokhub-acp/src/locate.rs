@@ -347,14 +347,22 @@ pub fn grok_stdout_timeout(bin: &Path, cwd: &Path, args: &[&str], secs: u64) -> 
     let stderr = child.stderr.take();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let mut so = Vec::new();
-        let mut se = Vec::new();
-        if let Some(mut o) = stdout {
-            let _ = o.read_to_end(&mut so);
-        }
-        if let Some(mut e) = stderr {
-            let _ = e.read_to_end(&mut se);
-        }
+        let h_out = thread::spawn(move || {
+            let mut so = Vec::new();
+            if let Some(mut o) = stdout {
+                let _ = o.read_to_end(&mut so);
+            }
+            so
+        });
+        let h_err = thread::spawn(move || {
+            let mut se = Vec::new();
+            if let Some(mut e) = stderr {
+                let _ = e.read_to_end(&mut se);
+            }
+            se
+        });
+        let so = h_out.join().unwrap_or_default();
+        let se = h_err.join().unwrap_or_default();
         let _ = tx.send((so, se));
     });
     let (so, se) = match rx.recv_timeout(Duration::from_secs(secs.max(1))) {

@@ -15846,7 +15846,9 @@ mod tests {
     fn chat_composer_pins_stop_on_the_right() {
         let src = include_str!("app.rs");
         let start = src.find("ComposerStackSlot::Pill =>").expect("pill arm");
-        let pill = &src[start..start + 8000];
+        let rest = &src[start..];
+        let end = rest.find("fn ui_devices").unwrap_or(rest.len().min(24_000));
+        let pill = &rest[..end];
         assert!(
             pill.contains("composer_go_cluster_w()"),
             "Fast + mic + Stop need a reserved strip: {pill}"

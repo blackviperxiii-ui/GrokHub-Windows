@@ -900,14 +900,15 @@ mod tests {
         assert!(src.contains("struct TrayHost"));
         #[cfg(windows)]
         {
-            assert!(src.contains("tray_icon"), "{src}");
+            let prod = src.split("mod tests").next().unwrap_or(src);
+            assert!(prod.contains("tray_icon"), "{prod}");
             assert!(
-                !src.contains("unsafe impl Send for TrayHost"),
-                "TrayIcon is !Send; keep it on the grokhub-tray thread: {src}"
+                !prod.contains("unsafe impl Send"),
+                "TrayIcon is !Send; keep it on the grokhub-tray thread"
             );
             assert!(
-                src.contains("GetMessageW"),
-                "the tray thread must pump Win32 messages: {src}"
+                prod.contains("GetMessageW"),
+                "the tray thread must pump Win32 messages"
             );
         }
         #[cfg(unix)]
