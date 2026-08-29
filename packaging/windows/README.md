@@ -15,7 +15,11 @@ Per-user install (no admin): `%LOCALAPPDATA%\Programs\GrokHub`
 pwsh -File scripts/make-windows-release.ps1
 ```
 
-Stages `target/release/grokhub.exe` + `grokhub-hub.exe`, optionally downloads Grok CLI into the stage, then runs ISCC.
+Stages `target/release/grokhub.exe` + `grokhub-hub.exe`, downloads Grok CLI into the stage, then runs ISCC. Missing `grok.exe` fails the pack (first-run install is the fallback for already-shipped builds). Offline:
+
+```powershell
+pwsh -File scripts/make-windows-release.ps1 -SkipGrok
+```
 
 ## Outputs (`dist-release/`)
 
@@ -24,7 +28,7 @@ Stages `target/release/grokhub.exe` + `grokhub-hub.exe`, optionally downloads Gr
 | Inno installer | `GrokHub-Setup-<version>.exe` |
 | Portable zip | `grokhub-windows-v<version>.zip` |
 
-Missing `grokhub.exe` / `grokhub-hub.exe` is fatal. Grok download failure is a warning only (`skipifsourcedoesntexist` on those files).
+Missing `grokhub.exe` / `grokhub-hub.exe` is fatal. Grok download failure is fatal unless `-SkipGrok`.
 
 ## Lock test (no Windows build)
 

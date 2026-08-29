@@ -5,7 +5,14 @@ if ($src -notmatch 'ProgramFiles\(x86\)') { throw 'pack script must probe x86 In
 if ($src -notmatch 'Get-Command ISCC') { throw 'pack script must probe PATH ISCC' }
 if ($src -notmatch 'missing GrokHub-Setup-\$Ver.exe') { throw 'pack script must fail if Setup.exe is missing after ISCC' }
 if ($src -notmatch 'grok-windows-artifact.ps1') { throw 'pack script must call grok download helper' }
+if ($src -notmatch 'SkipGrok') { throw 'pack script must allow offline -SkipGrok' }
+if ($src -notmatch 'missing grok.exe in stage') { throw 'release pack must fail closed without grok.exe' }
 $dl = Get-Content -Raw "$PSScriptRoot/grok-windows-artifact.ps1"
-if ($dl -notmatch 'exit 0') { throw 'grok download failure must not fail the cabin pack' }
+if ($dl -notmatch 'AllowSkip') { throw 'grok download helper must allow an explicit skip' }
 if ($dl -notmatch 'x.ai/cli/stable') { throw 'must resolve version from x.ai/cli/stable' }
+if ($dl -notmatch 'storage.googleapis.com/grok-build-public-artifacts') { throw 'must fall back to GCS artifacts' }
+$iss = Get-Content -Raw "$PSScriptRoot/../packaging/windows/grokhub.iss"
+if ($iss -notmatch 'stage\\grok\.exe"; DestDir: "\{app\}"') { throw 'Inno must vendor grok.exe next to grokhub.exe' }
+if ($iss -notmatch 'RegQueryStringValue\(HKCU') { throw 'Inno PATH check must read HKCU Environment' }
+if ($iss -notmatch 'ChangesEnvironment=yes') { throw 'Inno must broadcast the new PATH' }
 Write-Output 'pack script locks ok'

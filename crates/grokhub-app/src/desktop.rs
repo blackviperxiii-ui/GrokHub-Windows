@@ -130,6 +130,7 @@ fn read_pipe_capped(mut r: impl Read, cap: usize, overflow: &AtomicBool) -> Vec<
 pub(crate) fn run_limited(mut cmd: Command, timeout: Duration) -> Option<Output> {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    crate::host::hide_windows_console(&mut cmd);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -2166,6 +2167,10 @@ mod tests {
             .nth(1)
             .and_then(|s| s.split("\nfn remember_desk_frame(").next())
             .expect("run_limited");
+        assert!(
+            limited.contains("hide_windows_console"),
+            "desktop bins must not pop a console that kills the cabin: {limited}"
+        );
         assert!(
             !limited.contains("read_to_end"),
             "a huge clipboard dump must not slurp the whole pipe on the UI thread: {limited}"

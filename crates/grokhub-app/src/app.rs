@@ -1208,6 +1208,7 @@ pub struct Cabin {
     grok_list_gen: u64,
     grok_sessions_inflight: u32,
     pending_grok_deletes: HashSet<String>,
+    grok_install_rx: Option<mpsc::Receiver<Result<PathBuf, String>>>,
     inspect_rx: Option<mpsc::Receiver<String>>,
     history_rx: Option<mpsc::Receiver<Vec<String>>>,
     mem_restore_rx: Option<mpsc::Receiver<(String, Result<String, String>)>>,
@@ -1593,6 +1594,7 @@ impl Cabin {
             grok_list_gen: 0,
             grok_sessions_inflight: 0,
             pending_grok_deletes: HashSet::new(),
+            grok_install_rx: None,
             inspect_rx: None,
             history_rx: None,
             mem_restore_rx: None,
@@ -1623,7 +1625,42 @@ impl Cabin {
         if dropped_leftover {
             c.persist_bg();
         }
+        c.kick_grok_install_if_needed();
         c
+    }
+
+    fn kick_grok_install_if_needed(&mut self) {
+        if self.grok_install_rx.is_some() {
+            return;
+        }
+        if grokhub_acp::find_grok().is_some() {
+            return;
+        }
+        #[cfg(windows)]
+        {
+            self.status = "Installing Grok Build CLI…".into();
+            self.grok_install_rx = Some(grokhub_acp::begin_grok_install());
+        }
+    }
+
+    fn poll_grok_install(&mut self) {
+        let Some(rx) = self.grok_install_rx.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(path)) => {
+                grokhub_acp::prepend_grok_bin_to_process_path();
+                grokhub_acp::invalidate_grok_bin_cache();
+                self.status = format!("Grok Build ready — {}", path.display());
+            }
+            Ok(Err(e)) => {
+                self.status = e;
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                self.grok_install_rx = Some(rx);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {}
+        }
     }
 
     fn apply_saved_geom(&mut self, ctx: &egui::Context) {
@@ -9646,6 +9683,7 @@ impl eframe::App for Cabin {
         self.poll_wall();
         self.poll_persist();
         self.poll_grok_sessions();
+        self.poll_grok_install();
         self.poll_inspect();
         self.poll_grok_catalog();
         self.poll_grok_ext();

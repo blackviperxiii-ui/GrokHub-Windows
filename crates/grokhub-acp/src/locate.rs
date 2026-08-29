@@ -37,6 +37,24 @@ fn grok_bin_cache() -> &'static Mutex<Option<(String, Instant, Option<PathBuf>, 
     C.get_or_init(|| Mutex::new(None))
 }
 
+/// Hide a Windows console for spawned CLI tools (grok.exe, powershell).
+pub fn hide_windows_console(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = cmd;
+}
+
+/// Drop the grok PATH cache after a first-run install.
+pub fn invalidate_grok_bin_cache() {
+    if let Ok(mut held) = grok_bin_cache().lock() {
+        *held = None;
+    }
+}
+
 fn grok_bin_name() -> &'static str {
     if cfg!(windows) {
         "grok.exe"
@@ -140,6 +158,14 @@ fn cabin_config_root() -> Option<PathBuf> {
         return Some(PathBuf::from(app).join("GrokHub"));
     }
     Some(grokhub_core::user_home()?.join(".config/GrokHub"))
+}
+
+pub fn doctor_missing_hint() -> &'static str {
+    if cfg!(windows) {
+        "Grok Build CLI missing — irm https://x.ai/cli/install.ps1 | iex"
+    } else {
+        "Grok Build CLI missing — install from x.ai/cli"
+    }
 }
 
 /// Make `GROK_HOME` usable: directory plus a symlink to the real `grok login`.
@@ -370,6 +396,7 @@ fn grok_stdout_inner(
         .current_dir(&cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    hide_windows_console(&mut cmd);
     if isolate_cabin {
         if let Some(dir) = prepare_cabin_grok_home() {
             cmd.env("GROK_HOME", dir);
