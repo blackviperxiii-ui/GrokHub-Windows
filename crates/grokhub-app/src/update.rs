@@ -2,18 +2,21 @@ use crate::config;
 use crate::host::run_host;
 use grokhub_core::{
     discover_source, forbidden_reason, restart_acts, restart_bin, systemd_user_restart_args,
-    update_cmds, update_progress_pct, update_step_label, update_wipes_config, RestartAct,
+    systemd_user_stop_args, update_cmds, update_progress_pct, update_step_label,
+    update_wipes_config, RestartAct,
 };
 use std::env;
 use std::process::{Command, Stdio};
-#[cfg(all(test, unix))]
+#[cfg(test)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
 fn expand_source_hint(raw: &str) -> PathBuf {
-    let home = grokhub_core::user_home().map(|h| h.to_string_lossy().into_owned());
-    PathBuf::from(grokhub_core::expand_project_root(raw, home.as_deref()))
+    PathBuf::from(grokhub_core::expand_project_root(
+        raw,
+        env::var("HOME").ok().as_deref(),
+    ))
 }
 
 pub fn resolve_source(cfg_source: &str) -> Option<PathBuf> {
@@ -35,9 +38,9 @@ pub fn resolve_source(cfg_source: &str) -> Option<PathBuf> {
     if let Ok(cwd) = env::current_dir() {
         hints.push(cwd);
     }
-    if let Some(home) = grokhub_core::user_home() {
-        hints.push(home.join("Grok-Hub"));
-        hints.push(home.join("GrokHub"));
+    if let Ok(home) = env::var("HOME") {
+        hints.push(PathBuf::from(&home).join("Grok-Hub"));
+        hints.push(PathBuf::from(&home).join("GrokHub"));
     }
     discover_source(&hints)
 }
@@ -102,6 +105,13 @@ fn unit_is_active(unit: &str) -> bool {
     crate::desktop::run_limited(cmd, Duration::from_millis(1500)).is_some_and(|o| o.status.success())
 }
 
+pub fn stop_user_unit(unit: &str) -> bool {
+    let args = systemd_user_stop_args(unit);
+    let mut cmd = Command::new("systemctl");
+    cmd.args(&args);
+    crate::desktop::run_limited(cmd, Duration::from_secs(3)).is_some_and(|o| o.status.success())
+}
+
 fn spawn_detached(argv: &[String]) -> Result<(), String> {
     let (bin, args) = argv.split_first().ok_or("restart argv empty")?;
     let mut cmd = Command::new(bin);
@@ -131,7 +141,7 @@ fn replace_process(argv: &[String]) -> Result<(), String> {
 
 /// Relaunch hub/hands, then a new cabin process. Caller must persist first.
 pub fn restart_system(hidden: bool) -> Result<(), String> {
-    let home = grokhub_core::user_home().map(|h| h.to_string_lossy().into_owned());
+    let home = env::var("HOME").ok();
     let current = env::current_exe()
         .ok()
         .map(|p| p.to_string_lossy().into_owned());
@@ -166,7 +176,6 @@ mod tests {
     use crate::config::TEST_CONFIG_LOCK;
     use std::fs;
 
-    #[cfg(unix)]
     #[test]
     fn resolve_source_expands_tilde() {
         let _g = TEST_CONFIG_LOCK.lock().unwrap();
@@ -246,7 +255,6 @@ mod tests {
         assert!(run_update_cmds(&["rm -rf ~/.config/GrokHub".into()]).is_err());
     }
 
-    #[cfg(unix)]
     #[test]
     fn run_update_pulls_main_then_overlay() {
         let _g = TEST_CONFIG_LOCK.lock().unwrap();
@@ -310,7 +318,6 @@ mod tests {
         let _ = fs::remove_dir_all(&cfg);
     }
 
-    #[cfg(unix)]
     #[test]
     fn overlay_reports_percent_without_chat_text() {
         let cmds = vec!["true".into(), "true".into()];

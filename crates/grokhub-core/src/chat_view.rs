@@ -18,6 +18,26 @@ pub struct ChatView {
     pub body: String,
 }
 
+pub const CHAT_BLOCK_GAP: f32 = 10.0;
+pub const THOUGHT_CLUSTER_GAP: f32 = 3.0;
+
+/// Consecutive thoughts sit in one cluster; other blocks keep the chat gap.
+pub fn cluster_gap(this_thought: bool, next_thought: bool) -> f32 {
+    if this_thought && next_thought {
+        THOUGHT_CLUSTER_GAP
+    } else {
+        CHAT_BLOCK_GAP
+    }
+}
+
+pub fn thought_shows_label(prev_thought: bool) -> bool {
+    !prev_thought
+}
+
+pub fn thought_shows_acts(next_thought: bool) -> bool {
+    !next_thought
+}
+
 pub fn visible_turn_count(messages: &[(String, String)]) -> usize {
     visible_turn_count_from(messages.iter().map(|(r, c)| (r.as_str(), c.as_str())))
 }
@@ -297,7 +317,7 @@ fn host_cmd_heredoc_delim(line: &str) -> Option<String> {
 pub fn scrub_thought(text: &str) -> String {
     let mut out = String::new();
     for chunk in split_thought_chunks(text) {
-        if thought_chunk_is_attach_noise(chunk) {
+        if thought_chunk_is_attach_noise(chunk) || thought_chunk_is_false_no_computer(chunk) {
             continue;
         }
         out.push_str(chunk);
@@ -326,6 +346,29 @@ fn split_thought_chunks(text: &str) -> Vec<&str> {
         out.push(&text[start..]);
     }
     out
+}
+
+fn thought_chunk_is_false_no_computer(chunk: &str) -> bool {
+    let t = chunk.to_ascii_lowercase();
+    if t.trim().is_empty() {
+        return false;
+    }
+    let no_access = t.contains("don't have")
+        || t.contains("do not have")
+        || t.contains("can't access")
+        || t.contains("cannot access")
+        || t.contains("no direct access")
+        || t.contains("don't have direct access")
+        || t.contains("do not have direct access");
+    let target = t.contains("file system")
+        || t.contains("filesystem")
+        || t.contains("your computer")
+        || t.contains("your files")
+        || t.contains("move files around")
+        || t.contains("on your computer");
+    let cop_out = t.contains("exact commands to run on your computer")
+        || (t.contains("give you") && t.contains("plan") && t.contains("command"));
+    (no_access && target) || cop_out
 }
 
 fn thought_chunk_is_attach_noise(chunk: &str) -> bool {
@@ -558,6 +601,18 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_thoughts_cluster_tighter_than_chat() {
+        assert_eq!(cluster_gap(true, true), THOUGHT_CLUSTER_GAP);
+        assert_eq!(cluster_gap(true, false), CHAT_BLOCK_GAP);
+        assert_eq!(cluster_gap(false, true), CHAT_BLOCK_GAP);
+        assert!(THOUGHT_CLUSTER_GAP < CHAT_BLOCK_GAP);
+        assert!(thought_shows_label(false));
+        assert!(!thought_shows_label(true));
+        assert!(thought_shows_acts(false));
+        assert!(!thought_shows_acts(true));
+    }
+
+    #[test]
     fn think_tags_and_merge_roundtrip() {
         let merged = merge_thinking("Need a snapshot.", "I'll look.");
         assert!(merged.starts_with("THINKING:"));
@@ -754,6 +809,24 @@ mod tests {
         )]);
         assert_eq!(kinds(&gone), vec![ChatKind::Assistant]);
         assert_eq!(gone[0].body, "Hello.");
+    }
+
+    #[test]
+    fn thought_drops_false_no_computer_claim() {
+        assert_eq!(
+            scrub_thought("I don't have direct access to your actual file system. I'll list Videos."),
+            "I'll list Videos."
+        );
+        assert!(scrub_thought(
+            "I need to be upfront about a limitation: I don't have the ability to move files around on your computer."
+        )
+        .is_empty());
+        let v = visible_chat(&[(
+            "assistant".into(),
+            "THINKING:\nI don't have access to your computer.\n\nYour Videos folder is sorted.".into(),
+        )]);
+        assert_eq!(kinds(&v), vec![ChatKind::Assistant]);
+        assert_eq!(v[0].body, "Your Videos folder is sorted.");
     }
 
     #[test]

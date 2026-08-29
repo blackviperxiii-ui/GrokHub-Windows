@@ -76,6 +76,8 @@ pub struct AppConfig {
     pub close_to_tray: bool,
     #[serde(default)]
     pub mode: String,
+    #[serde(default)]
+    pub reasoning_effort: String,
     #[serde(default = "default_quiet_start")]
     pub quiet_start: String,
     #[serde(default = "default_quiet_end")]
@@ -133,6 +135,10 @@ fn default_theme() -> String {
     "dark".into()
 }
 
+fn default_reasoning_effort() -> String {
+    "high".into()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -153,6 +159,7 @@ impl Default for AppConfig {
             connector_hosts: Vec::new(),
             close_to_tray: default_close_to_tray(),
             mode: String::new(),
+            reasoning_effort: default_reasoning_effort(),
             quiet_start: default_quiet_start(),
             quiet_end: default_quiet_end(),
             daily_auto_cap: default_daily_auto(),
@@ -240,6 +247,13 @@ pub fn load() -> AppConfig {
     cfg.yolo = false;
     if cfg.device_name.trim().is_empty() {
         cfg.device_name = default_device_name();
+    }
+    if cfg.reasoning_effort.trim().is_empty() {
+        cfg.reasoning_effort = grokhub_core::agent_reasoning_effort_for_mode(&cfg.mode)
+            .unwrap_or("high")
+            .to_string();
+    } else if let Some(effort) = grokhub_core::parse_reasoning_effort(&cfg.reasoning_effort) {
+        cfg.reasoning_effort = effort.to_string();
     }
     cfg
 }

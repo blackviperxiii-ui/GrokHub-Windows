@@ -301,6 +301,15 @@ fn invalidate_cdp_cache() {
     }
 }
 
+pub fn probe_hub_health_body(port: u16) -> Option<String> {
+    let url = format!("http://127.0.0.1:{port}/v1/health");
+    ureq::get(&url)
+        .timeout(Duration::from_millis(400))
+        .call()
+        .ok()
+        .and_then(|r| r.into_string().ok())
+}
+
 fn cdp_http(port: u16, path: &str) -> Result<String, String> {
     let url = format!("http://127.0.0.1:{port}{path}");
     let resp = ureq::get(&url)
@@ -594,9 +603,7 @@ pub fn resolve_bin(name: &str) -> Option<PathBuf> {
     resolve_bin_in(
         name,
         std::env::var("PATH").ok().as_deref(),
-        grokhub_core::user_home()
-            .as_ref()
-            .and_then(|p| p.to_str()),
+        std::env::var("HOME").ok().as_deref(),
     )
 }
 
@@ -1727,6 +1734,33 @@ pub fn record_pcm_chunks() -> Vec<Vec<u8>> {
     }
 }
 
+pub fn save_file_dialog(suggested: &str) -> Option<PathBuf> {
+    let name = std::path::Path::new(suggested)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("imagine.png");
+    for bin in ["zenity", "kdialog", "yad", "qarma"] {
+        let Some(args) = grokhub_core::picker_save_args(bin, name) else {
+            continue;
+        };
+        if !which(bin) {
+            continue;
+        }
+        if let Ok(o) = Command::new(bin).args(args).output() {
+            if o.status.success() {
+                if let Some(p) = grokhub_core::parse_picker_stdout(&String::from_utf8_lossy(&o.stdout)) {
+                    let path = PathBuf::from(p);
+                    if !path.as_os_str().is_empty() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn pick_file() -> Option<PathBuf> {
     for bin in ["zenity", "kdialog", "yad", "qarma"] {
         let Some(args) = picker_args(bin) else {
@@ -2114,22 +2148,19 @@ mod tests {
 
     #[test]
     fn run_limited_kills_a_hung_desktop_command() {
-        #[cfg(unix)]
-        {
-            let mut cmd = Command::new("sleep");
-            cmd.arg("30");
-            let started = Instant::now();
-            let out = run_limited(cmd, Duration::from_millis(250));
-            assert!(
-                out.is_none(),
-                "hung desktop spawn must time out, got {out:?}"
-            );
-            assert!(
-                started.elapsed() < Duration::from_secs(3),
-                "UI-thread desktop spawn must not wait out the child: {:?}",
-                started.elapsed()
-            );
-        }
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let started = Instant::now();
+        let out = run_limited(cmd, Duration::from_millis(250));
+        assert!(
+            out.is_none(),
+            "hung desktop spawn must time out, got {out:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "UI-thread desktop spawn must not wait out the child: {:?}",
+            started.elapsed()
+        );
         let limited = include_str!("desktop.rs")
             .split("pub(crate) fn run_limited(")
             .nth(1)
@@ -2143,17 +2174,14 @@ mod tests {
             limited.contains("IMAGE_FILE_CAP"),
             "run_limited must stop reading past IMAGE_FILE_CAP: {limited}"
         );
-        #[cfg(unix)]
-        {
-            let mut dump = Command::new("head");
-            dump.args(["-c", &(IMAGE_FILE_CAP + 2 * 1024 * 1024).to_string(), "/dev/zero"]);
-            let out = run_limited(dump, Duration::from_secs(3)).expect("head exited");
-            assert!(
-                out.stdout.len() as u64 <= IMAGE_FILE_CAP + 1,
-                "huge stdout must stay capped, got {}",
-                out.stdout.len()
-            );
-        }
+        let mut dump = Command::new("head");
+        dump.args(["-c", &(IMAGE_FILE_CAP + 2 * 1024 * 1024).to_string(), "/dev/zero"]);
+        let out = run_limited(dump, Duration::from_secs(3)).expect("head exited");
+        assert!(
+            out.stdout.len() as u64 <= IMAGE_FILE_CAP + 1,
+            "huge stdout must stay capped, got {}",
+            out.stdout.len()
+        );
     }
 
     #[test]

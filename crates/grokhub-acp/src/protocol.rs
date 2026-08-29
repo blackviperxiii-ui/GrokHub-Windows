@@ -108,6 +108,8 @@ pub struct PermissionAsk {
     pub session_id: String,
     pub title: String,
     pub tool_call_id: String,
+    /// Hook `ask` reason (or any other prompt body the CLI sent).
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,6 +120,14 @@ pub enum AcpEvent {
     Tool(ToolCard),
     Plan(String),
     Permission(PermissionAsk),
+    Usage(crate::stream::GrokUsage),
+    Commands(Vec<String>),
+    Task { id: String, title: String, done: bool },
+    Compact {
+        started: bool,
+        usage: crate::stream::GrokUsage,
+        error: Option<String>,
+    },
     Done { stop_reason: String },
     Err(String),
 }
@@ -168,6 +178,23 @@ pub fn notification(method: &str, params: Value) -> JsonRpc {
         result: None,
         error: None,
     }
+}
+
+/// JSON-RPC 2.0 method-not-found. Grok Build closes stdio if a client-bound
+/// request (fs/readTextFile, terminal/*) sits unanswered after session/new.
+pub fn rpc_error(id: Value, code: i64, message: &str) -> JsonRpc {
+    JsonRpc {
+        jsonrpc: "2.0".into(),
+        id: Some(id),
+        method: None,
+        params: None,
+        result: None,
+        error: Some(json!({ "code": code, "message": message })),
+    }
+}
+
+pub fn method_not_found(id: Value) -> JsonRpc {
+    rpc_error(id, -32601, "Method not found")
 }
 
 pub fn encode_line(msg: &JsonRpc) -> String {
@@ -269,6 +296,9 @@ pub fn pick_auth_method(auth_methods: &Value, api_key: &str) -> Option<String> {
     }
     if ids.iter().any(|i| i == "cached_token") {
         return Some("cached_token".into());
+    }
+    if ids.iter().any(|i| i == "grok.com") {
+        return Some("grok.com".into());
     }
     if has_api_key && ids.iter().any(|i| i == "xai.api_key") {
         return Some("xai.api_key".into());
@@ -587,7 +617,118 @@ pub fn parse_session_update(params: &Value) -> Option<AcpEvent> {
             }
         }
         "tool_call" | "tool_call_update" => Some(AcpEvent::Tool(parse_tool_card(update))),
+        "available_commands_update" | "available_commands" => {
+            let cmds = update
+                .get("availableCommands")
+                .or_else(|| update.get("commands"))
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| {
+                            x.get("name")
+                                .or_else(|| x.get("command"))
+                                .and_then(|n| n.as_str())
+                                .or_else(|| x.as_str())
+                                .map(|s| s.trim().to_string())
+                        })
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if cmds.is_empty() {
+                None
+            } else {
+                Some(AcpEvent::Commands(cmds))
+            }
+        }
+        "usage_update" | "turn_completed" => {
+            let u = crate::stream::parse_usage(update);
+            if u.is_empty() {
+                None
+            } else {
+                Some(AcpEvent::Usage(u))
+            }
+        }
+        "task_backgrounded" => Some(AcpEvent::Task {
+            id: update
+                .get("task_id")
+                .or_else(|| update.get("tool_call_id"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            title: update
+                .get("command")
+                .or_else(|| update.get("title"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("task")
+                .chars()
+                .take(80)
+                .collect(),
+            done: false,
+        }),
+        "task_completed" => Some(AcpEvent::Task {
+            id: update
+                .get("task_id")
+                .or_else(|| update.pointer("/task_snapshot/task_id"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            title: update
+                .get("command")
+                .or_else(|| update.pointer("/task_snapshot/command"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("task")
+                .chars()
+                .take(80)
+                .collect(),
+            done: true,
+        }),
+        "auto_compact_started" => Some(AcpEvent::Compact {
+            started: true,
+            usage: crate::stream::parse_usage(update),
+            error: None,
+        }),
+        "auto_compact_completed" => Some(AcpEvent::Compact {
+            started: false,
+            usage: crate::stream::parse_usage(update),
+            error: None,
+        }),
+        "auto_compact_failed" => {
+            let msg = update
+                .get("message")
+                .or_else(|| update.get("error"))
+                .or_else(|| update.get("reason"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("Compact failed")
+                .trim()
+                .to_string();
+            Some(AcpEvent::Compact {
+                started: false,
+                usage: crate::stream::parse_usage(update),
+                error: Some(if msg.is_empty() {
+                    "Compact failed".into()
+                } else {
+                    msg
+                }),
+            })
+        }
         "plan" => {
+            if let Some(entries) = update.get("entries").and_then(|e| e.as_array()) {
+                let lines: Vec<String> = entries
+                    .iter()
+                    .filter_map(|e| {
+                        let c = e.get("content").and_then(|x| x.as_str())?.trim();
+                        if c.is_empty() {
+                            None
+                        } else {
+                            Some(c.to_string())
+                        }
+                    })
+                    .collect();
+                if !lines.is_empty() {
+                    return Some(AcpEvent::Plan(lines.join(" · ")));
+                }
+            }
             let t = update
                 .get("title")
                 .or_else(|| update.get("text"))
@@ -617,11 +758,22 @@ pub fn parse_permission(id: Value, params: &Value) -> PermissionAsk {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let reason = params
+        .get("reason")
+        .or_else(|| params.get("message"))
+        .or_else(|| params.get("permissionDecisionReason"))
+        .or_else(|| params.get("hookReason"))
+        .or_else(|| tool.get("reason"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
     PermissionAsk {
         rpc_id: id,
         session_id,
         title,
         tool_call_id,
+        reason,
     }
 }
 
@@ -672,6 +824,12 @@ mod tests {
             Some("cached_token"),
             "grok login JWT must not steal xai.api_key"
         );
+        let alpha = json!([{ "id": "grok.com", "name": "Grok" }]);
+        assert_eq!(
+            pick_auth_method(&alpha, "").as_deref(),
+            Some("grok.com"),
+            "alpha advertises grok.com when logged out"
+        );
     }
 
     #[test]
@@ -685,10 +843,24 @@ mod tests {
         assert_eq!(with["prompt"][1]["type"], "image");
         assert_eq!(with["prompt"][1]["mimeType"], "image/jpeg");
         assert_eq!(with["prompt"][1]["data"], "QQ==");
+        let ask = parse_permission(
+            json!(1),
+            &json!({
+                "sessionId": "s1",
+                "toolCall": { "title": "Run", "toolCallId": "c1" },
+                "reason": "Confirm this deploy"
+            }),
+        );
+        assert_eq!(ask.title, "Run");
+        assert_eq!(ask.reason, "Confirm this deploy");
         assert!(split_image_data_url("data:text/plain;base64,QQ==").is_none());
         assert!(split_image_data_url("not-a-data-url").is_none());
         assert!(is_jwt_api_key("aaa.bbb.ccc"));
         assert!(!is_jwt_api_key("xai-console-key"));
+        let reject = method_not_found(json!(77));
+        assert_eq!(reject.id, Some(json!(77)));
+        assert_eq!(reject.error.as_ref().unwrap()["code"], -32601);
+        assert!(encode_line(&reject).contains("Method not found"));
     }
 
     #[test]

@@ -5,9 +5,9 @@ pub const XAI_BASE: &str = "https://api.x.ai/v1";
 pub const DEFAULT_MODEL: &str = "grok-3-mini-fast";
 /// Greeting, chips, and other cabin Fast-path calls. Not the composer ladder.
 /// Product name: Grok 4.1 Fast. Live API id still accepted after retirement.
-pub const CABIN_FAST_MODEL: &str = "grok-4-1-fast-non-reasoning";
-/// Used only if 4.1 Fast returns empty (retired alias). Fast non-reasoning successor.
-pub const CABIN_FAST_FALLBACK: &str = "grok-4.20-0309-non-reasoning";
+pub const CABIN_FAST_MODEL: &str = "grok-4.6";
+/// Used only if the default model returns empty.
+pub const CABIN_FAST_FALLBACK: &str = "grok-4.5";
 
 pub fn needs_auth_banner(has_key: bool) -> bool {
     !has_key
@@ -82,9 +82,51 @@ pub fn reasoning_effort_for_mode(mode: &str) -> Option<&'static str> {
     }
 }
 
+/// Grok Build `grok agent --reasoning-effort` from the composer ladder / `/effort`.
+pub fn agent_reasoning_effort_for_mode(mode: &str) -> Option<&'static str> {
+    match mode.trim() {
+        "max" | "deep" | "heavy" => Some("xhigh"),
+        "think" | "build" | "expert" => Some("high"),
+        "fast" | "auto" => Some("low"),
+        "balanced" | "balance" => Some("medium"),
+        _ => None,
+    }
+}
+
+/// Composer effort dropdown levels (Grok Build 1.0.11 canonical ladder).
+pub const REASONING_EFFORTS: &[(&str, &str)] = &[
+    ("none", "None"),
+    ("minimal", "Minimal"),
+    ("low", "Low"),
+    ("medium", "Medium"),
+    ("high", "High"),
+    ("xhigh", "Extra High"),
+    ("max", "Max"),
+];
+
+/// Normalize effort ids and legacy aliases (`/effort`, `/mode`).
+pub fn parse_reasoning_effort(s: &str) -> Option<&'static str> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "none" | "off" => Some("none"),
+        "minimal" | "mini" => Some("minimal"),
+        "low" | "fast" => Some("low"),
+        "medium" | "med" | "balanced" | "balance" => Some("medium"),
+        "high" | "think" | "build" | "expert" => Some("high"),
+        "xhigh" | "deep" | "heavy" => Some("xhigh"),
+        "max" => Some("max"),
+        _ => None,
+    }
+}
+
+pub fn effort_label(id: &str) -> &'static str {
+    parse_reasoning_effort(id)
+        .and_then(|e| REASONING_EFFORTS.iter().find(|(k, _)| *k == e).map(|(_, l)| *l))
+        .unwrap_or("High")
+}
+
 pub fn chat_timeout_secs(effort: Option<&str>) -> u64 {
     match effort {
-        Some("high") | Some("xhigh") => 600,
+        Some("high") | Some("xhigh") | Some("max") => 600,
         _ => 120,
     }
 }
@@ -458,6 +500,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_reasoning_effort_aliases() {
+        assert_eq!(parse_reasoning_effort("low"), Some("low"));
+        assert_eq!(parse_reasoning_effort("fast"), Some("low"));
+        assert_eq!(parse_reasoning_effort("medium"), Some("medium"));
+        assert_eq!(parse_reasoning_effort("balance"), Some("medium"));
+        assert_eq!(parse_reasoning_effort("high"), Some("high"));
+        assert_eq!(parse_reasoning_effort("think"), Some("high"));
+        assert_eq!(parse_reasoning_effort("xhigh"), Some("xhigh"));
+        assert_eq!(parse_reasoning_effort("max"), Some("max"));
+        assert_eq!(parse_reasoning_effort("mini"), Some("minimal"));
+        assert_eq!(parse_reasoning_effort("none"), Some("none"));
+        assert_eq!(effort_label("xhigh"), "Extra High");
+        assert_eq!(effort_label("max"), "Max");
+        assert_eq!(REASONING_EFFORTS.len(), 7);
+    }
+
+    #[test]
     fn think_is_grok_4_6_high() {
         assert_eq!(model_for_mode("think"), "grok-4.6");
         assert_eq!(model_for_mode("build"), "grok-4.6");
@@ -466,6 +525,8 @@ mod tests {
         assert_eq!(resolve_chat_model("think", ""), "grok-4.6");
         assert_eq!(reasoning_effort_for_mode("think"), Some("high"));
         assert_eq!(reasoning_effort_for_mode("max"), Some("xhigh"));
+        assert_eq!(agent_reasoning_effort_for_mode("fast"), Some("low"));
+        assert_eq!(agent_reasoning_effort_for_mode("balanced"), Some("medium"));
         assert_eq!(reasoning_effort_for_mode("auto"), None);
         let think = chat_request_body_for_mode("think", &[("user".into(), "hi".into())]);
         assert_eq!(think["model"], "grok-4.6");

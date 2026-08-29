@@ -53,12 +53,8 @@ pub fn wants_live_repaint(
     running || chip_busy || hub_on || imagine || wall_busy
 }
 
-pub fn live_home() -> Option<String> {
-    grokhub_core::user_home().map(|h| h.to_string_lossy().into_owned())
-}
-
 pub fn expand_home(p: &str) -> String {
-    grokhub_core::expand_project_root(p, live_home().as_deref())
+    grokhub_core::expand_project_root(p, std::env::var("HOME").ok().as_deref())
 }
 
 #[cfg(test)]
@@ -97,12 +93,9 @@ mod tests {
         assert!(!click_project_opens_board(false));
     }
 
-    #[cfg(unix)]
     #[test]
     fn expand_home_understands_dollar_home() {
-        let home = grokhub_core::user_home()
-            .map(|h| h.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "/home/j".into());
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/j".into());
         assert_eq!(expand_home("$HOME/proj"), format!("{home}/proj"));
         assert_eq!(expand_home("~/proj"), format!("{home}/proj"));
     }

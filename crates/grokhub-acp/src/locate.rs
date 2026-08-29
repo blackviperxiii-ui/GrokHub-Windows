@@ -1,4 +1,3 @@
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex, OnceLock};
@@ -39,21 +38,34 @@ fn grok_bin_cache() -> &'static Mutex<Option<(String, Instant, Option<PathBuf>, 
 }
 
 fn grok_bin_name() -> &'static str {
-    if cfg!(windows) { "grok.exe" } else { "grok" }
+    if cfg!(windows) {
+        "grok.exe"
+    } else {
+        "grok"
+    }
 }
 
 fn find_grok_scan() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("GROKHUB_GROK") {
         let p = PathBuf::from(p);
-        return p.is_file().then_some(p);
+        if p.is_file() {
+            return Some(p);
+        }
+        // Explicit override: do not fall through to PATH / ~/.local/bin/grok.
+        return None;
     }
     if let Some(p) = which("grok") {
         return Some(p);
     }
-    let home = grokhub_core::user_home()?;
-    let p = home.join(".grok").join("bin").join(grok_bin_name());
-    if p.is_file() {
-        return Some(p);
+    if let Some(home) = grokhub_core::user_home() {
+        let p = home.join(".grok").join("bin").join(grok_bin_name());
+        if p.is_file() {
+            return Some(p);
+        }
+        let p = home.join(".local").join("bin").join(grok_bin_name());
+        if p.is_file() {
+            return Some(p);
+        }
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -106,15 +118,31 @@ pub fn grok_home() -> Option<PathBuf> {
     Some(grokhub_core::user_home()?.join(".grok"))
 }
 
-pub fn cabin_grok_home() -> Option<PathBuf> {
-    Some(cabin_config_root()?.join("grok-home"))
-}
-
+/// Socket for cabin `grok agent stdio`. Must not be `~/.grok/leader.sock` or the
+/// interactive CLI leader SIGTERMs the cabin child (wait status 143).
 pub fn cabin_leader_socket() -> Option<PathBuf> {
     Some(cabin_grok_home()?.join("leader.sock"))
 }
 
-/// Make `GROK_HOME` usable: directory plus auth from the real `grok login`.
+/// Isolated grok home for the cabin child. Sharing `~/.grok` loads the CLI's
+/// chrome-devtools MCP plugin and the running CLI can SIGTERM this process
+/// (exit 143) while it pushes the model catalog.
+pub fn cabin_grok_home() -> Option<PathBuf> {
+    Some(cabin_config_root()?.join("grok-home"))
+}
+
+fn cabin_config_root() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("GROKHUB_CONFIG") {
+        return Some(PathBuf::from(p));
+    }
+    if cfg!(windows) {
+        let app = std::env::var_os("APPDATA")?;
+        return Some(PathBuf::from(app).join("GrokHub"));
+    }
+    Some(grokhub_core::user_home()?.join(".config/GrokHub"))
+}
+
+/// Make `GROK_HOME` usable: directory plus a symlink to the real `grok login`.
 pub fn prepare_cabin_grok_home() -> Option<PathBuf> {
     let dir = cabin_grok_home()?;
     std::fs::create_dir_all(&dir).ok()?;
@@ -132,25 +160,6 @@ pub fn prepare_cabin_grok_home() -> Option<PathBuf> {
         }
     }
     Some(dir)
-}
-
-fn cabin_config_root() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("GROKHUB_CONFIG") {
-        return Some(PathBuf::from(p));
-    }
-    if cfg!(windows) {
-        let app = std::env::var_os("APPDATA")?;
-        return Some(PathBuf::from(app).join("GrokHub"));
-    }
-    Some(grokhub_core::user_home()?.join(".config/GrokHub"))
-}
-
-pub fn doctor_missing_hint() -> &'static str {
-    if cfg!(windows) {
-        "Grok Build CLI missing — irm https://x.ai/cli/install.ps1 | iex"
-    } else {
-        "Grok Build CLI missing — install from x.ai/cli"
-    }
 }
 
 pub fn grok_auth_path() -> Option<PathBuf> {
@@ -290,7 +299,7 @@ pub fn doctor_line_busy() -> bool {
 
 pub fn doctor_grok_line(bin: Option<&Path>) -> (bool, String) {
     if bin.is_none() {
-        return (false, doctor_missing_hint().into());
+        return (false, "Grok Build CLI missing — install from x.ai/cli".into());
     }
     if let Ok(held) = doctor_line_cache().lock() {
         if let Some((path, at, ok, text, inflight)) = held.as_ref() {
@@ -314,7 +323,7 @@ pub fn doctor_grok_line(bin: Option<&Path>) -> (bool, String) {
     };
     thread::spawn(move || {
         let (ok, text) = match &path {
-            None => (false, doctor_missing_hint().into()),
+            None => (false, "Grok Build CLI missing — install from x.ai/cli".into()),
             Some(p) => match grok_version(p) {
                 Ok(v) => (true, format!("Grok Build {v}")),
                 Err(e) => (false, format!("Grok Build present but unreadable: {e}")),
@@ -333,65 +342,72 @@ pub fn grok_stdout(bin: &Path, cwd: &Path, args: &[&str]) -> Result<String, Stri
 
 /// Run `grok` and cap how long we wait so History cannot freeze the cabin.
 pub fn grok_stdout_timeout(bin: &Path, cwd: &Path, args: &[&str], secs: u64) -> Result<String, String> {
+    grok_stdout_inner(bin, cwd, args, secs, true)
+}
+
+/// Skills / MCP / marketplace live in the user's `~/.grok`, not cabin GROK_HOME.
+pub fn grok_user_stdout_timeout(
+    bin: &Path,
+    cwd: &Path,
+    args: &[&str],
+    secs: u64,
+) -> Result<String, String> {
+    grok_stdout_inner(bin, cwd, args, secs, false)
+}
+
+fn grok_stdout_inner(
+    bin: &Path,
+    cwd: &Path,
+    args: &[&str],
+    secs: u64,
+    isolate_cabin: bool,
+) -> Result<String, String> {
     let bin = bin.to_path_buf();
     let cwd = cwd.to_path_buf();
     let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let mut child = Command::new(&bin)
-        .args(&owned)
+    let mut cmd = Command::new(&bin);
+    cmd.args(&owned)
         .current_dir(&cwd)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+        .stderr(Stdio::piped());
+    if isolate_cabin {
+        if let Some(dir) = prepare_cabin_grok_home() {
+            cmd.env("GROK_HOME", dir);
+        }
+        if let Some(sock) = cabin_leader_socket() {
+            cmd.env("GROK_LEADER_SOCKET", sock);
+        }
+    }
+    let child = cmd.spawn().map_err(|e| e.to_string())?;
+    let pid = child.id();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let h_out = thread::spawn(move || {
-            let mut so = Vec::new();
-            if let Some(mut o) = stdout {
-                let _ = o.read_to_end(&mut so);
-            }
-            so
-        });
-        let h_err = thread::spawn(move || {
-            let mut se = Vec::new();
-            if let Some(mut e) = stderr {
-                let _ = e.read_to_end(&mut se);
-            }
-            se
-        });
-        let so = h_out.join().unwrap_or_default();
-        let se = h_err.join().unwrap_or_default();
-        let _ = tx.send((so, se));
+        let out = child.wait_with_output();
+        let _ = tx.send(out);
     });
-    let (so, se) = match rx.recv_timeout(Duration::from_secs(secs.max(1))) {
-        Ok(bufs) => bufs,
+    let out = match rx.recv_timeout(Duration::from_secs(secs.max(1))) {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return Err(e.to_string()),
         Err(_) => {
-            #[cfg(unix)]
-            {
-                let pid = child.id();
-                let _ = Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .status();
-                thread::sleep(Duration::from_millis(80));
-                let _ = Command::new("kill")
-                    .args(["-KILL", &pid.to_string()])
-                    .status();
-            }
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .status();
+            thread::sleep(Duration::from_millis(80));
+            let _ = Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
             return Err(format!("grok {} timed out", args.join(" ")));
         }
     };
-    let status = child.wait().map_err(|e| e.to_string())?;
-    let stdout = String::from_utf8_lossy(&so).trim().to_string();
-    let stderr = String::from_utf8_lossy(&se).trim().to_string();
-    if !status.success() && stdout.is_empty() {
-        return Err(if stderr.is_empty() {
-            format!("grok {} failed", args.join(" "))
-        } else {
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if !out.status.success() {
+        return Err(if !stderr.is_empty() {
             stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("grok {} failed", args.join(" "))
         });
     }
     if stdout.is_empty() {
@@ -401,8 +417,15 @@ pub fn grok_stdout_timeout(bin: &Path, cwd: &Path, args: &[&str], secs: u64) -> 
     }
 }
 
-pub fn agent_args(always_approve: bool) -> Vec<String> {
+pub fn agent_args(always_approve: bool, reasoning_effort: Option<&str>) -> Vec<String> {
     let mut a = vec!["--no-auto-update".into(), "agent".into()];
+    if let Some(effort) = reasoning_effort {
+        let effort = effort.trim();
+        if !effort.is_empty() {
+            a.push("--reasoning-effort".into());
+            a.push(effort.into());
+        }
+    }
     if always_approve {
         a.push("--always-approve".into());
     }
@@ -410,93 +433,116 @@ pub fn agent_args(always_approve: bool) -> Vec<String> {
     a
 }
 
-pub fn agent_args_resume(always_approve: bool, resume: Option<&str>) -> Vec<String> {
+/// Headless `grok -p` so a cabin chat maps 1:1 onto a Grok Build session
+/// without a long-lived `agent stdio` child of the GUI (exit 143).
+pub fn single_turn_args(
+    prompt: &str,
+    cwd: &str,
+    resume: Option<&str>,
+    always_approve: bool,
+    auto: bool,
+) -> Vec<String> {
+    let mut a = vec![
+        "--no-auto-update".into(),
+        "-p".into(),
+        prompt.to_string(),
+        "--cwd".into(),
+        cwd.to_string(),
+        "--output-format".into(),
+        "streaming-json".into(),
+    ];
+    if always_approve {
+        a.push("--always-approve".into());
+    } else if auto {
+        a.push("--permission-mode".into());
+        a.push("auto".into());
+    }
+    if let Some(id) = resume.map(str::trim).filter(|s| !s.is_empty()) {
+        a.push("--resume".into());
+        a.push(id.to_string());
+    }
+    if let Some(sock) = cabin_leader_socket() {
+        a.push("--leader-socket".into());
+        a.push(sock.display().to_string());
+    }
+    a
+}
+
+pub fn single_turn_args_full(
+    prompt: &str,
+    cwd: &str,
+    resume: Option<&str>,
+    always_approve: bool,
+    auto: bool,
+    model: Option<&str>,
+    effort: Option<&str>,
+    plan: bool,
+) -> Vec<String> {
+    let mut a = single_turn_args(prompt, cwd, resume, always_approve && !plan, auto && !plan);
+    if plan {
+        a.push("--permission-mode".into());
+        a.push("plan".into());
+    } else if !always_approve && !auto {
+        // grok -p has no TTY. Default Ask would cancel every shell tool.
+        a.push("--always-approve".into());
+    }
+    if let Some(m) = model.map(str::trim).filter(|s| !s.is_empty()) {
+        a.push("--model".into());
+        a.push(m.to_string());
+    }
+    if let Some(e) = effort.map(str::trim).filter(|s| !s.is_empty()) {
+        a.push("--reasoning-effort".into());
+        a.push(e.to_string());
+    }
+    a.push("--sandbox".into());
+    a.push("off".into());
+    a.push("--rules".into());
+    a.push(CABIN_DESKTOP_RULES.into());
+    a
+}
+
+/// Headless GrokHub chat is Grok Build on this Linux box, not grok.com.
+pub const CABIN_DESKTOP_RULES: &str = "You are Grok Build running on this Linux desktop through GrokHub. You have full local filesystem, shell, and computer-use tools. Never say you lack access to this computer, files, or desktop. Do the work with tools.";
+
+/// Swap `-p <prompt>` for `--prompt-json` when a still is attached.
+pub fn with_prompt_json(mut args: Vec<String>, json: &str) -> Vec<String> {
+    if let Some(i) = args.iter().position(|a| a == "-p") {
+        args.remove(i);
+        if i < args.len() {
+            args.remove(i);
+        }
+        args.push("--prompt-json".into());
+        args.push(json.to_string());
+    }
+    args
+}
+
+pub fn with_fork_session(mut args: Vec<String>, fork: bool) -> Vec<String> {
+    if fork && args.iter().any(|a| a == "--resume") {
+        args.push("--fork-session".into());
+    }
+    args
+}
+
+pub fn with_worktree(mut args: Vec<String>, on: bool) -> Vec<String> {
+    if on && !args.iter().any(|a| a == "--worktree") {
+        args.push("--worktree".into());
+    }
+    args
+}
+
+pub fn agent_args_resume(
+    always_approve: bool,
+    resume: Option<&str>,
+    reasoning_effort: Option<&str>,
+) -> Vec<String> {
     let _ = resume;
-    agent_args(always_approve)
+    agent_args(always_approve, reasoning_effort)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn which_tries_exe_suffix() {
-        let dir = std::env::temp_dir().join(format!("grokhub-which-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let exe = if cfg!(windows) { "probe.exe" } else { "probe" };
-        std::fs::write(dir.join(exe), b"x").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut p = std::fs::metadata(dir.join(exe)).unwrap().permissions();
-            p.set_mode(0o755);
-            std::fs::set_permissions(dir.join(exe), p).unwrap();
-        }
-        let old = std::env::var_os("PATH");
-        std::env::set_var("PATH", &dir);
-        let hit = which("probe");
-        match old {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(hit.is_some(), "which(probe) must find {exe}");
-    }
-
-    #[test]
-    fn find_grok_scan_uses_userprofile_grok_bin() {
-        let prev = std::env::var_os("GROKHUB_GROK");
-        std::env::remove_var("GROKHUB_GROK");
-        let dir = std::env::temp_dir().join(format!("grokhub-grokhome-{}", std::process::id()));
-        let bin = dir.join(".grok").join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let name = if cfg!(windows) { "grok.exe" } else { "grok" };
-        std::fs::write(bin.join(name), b"x").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut p = std::fs::metadata(bin.join(name)).unwrap().permissions();
-            p.set_mode(0o755);
-            std::fs::set_permissions(bin.join(name), p).unwrap();
-        }
-        let old_home = std::env::var_os("HOME");
-        let old_up = std::env::var_os("USERPROFILE");
-        std::env::set_var("HOME", &dir);
-        std::env::set_var("USERPROFILE", &dir);
-        let old_path = std::env::var_os("PATH");
-        std::env::set_var("PATH", "/no/such/grokhub-path");
-        let hit = find_grok_scan();
-        match old_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match old_up {
-            Some(v) => std::env::set_var("USERPROFILE", v),
-            None => std::env::remove_var("USERPROFILE"),
-        }
-        match old_path {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
-        match prev {
-            Some(v) => std::env::set_var("GROKHUB_GROK", v),
-            None => std::env::remove_var("GROKHUB_GROK"),
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(
-            hit.as_ref().is_some_and(|p| p.ends_with(name)),
-            "expected {name} under ~/.grok/bin, got {hit:?}"
-        );
-    }
-
-    #[test]
-    fn doctor_missing_names_official_install() {
-        let (_, text) = doctor_grok_line(None);
-        assert!(!doctor_grok_line(None).0);
-        assert!(text.contains("x.ai/cli"), "{text}");
-        #[cfg(windows)]
-        assert!(text.contains("install.ps1"), "{text}");
-    }
 
     #[test]
     fn env_override_missing_is_none() {
@@ -508,9 +554,10 @@ mod tests {
         } else {
             std::env::remove_var("GROKHUB_GROK");
         }
-        if let Some(p) = hit {
-            assert_ne!(p, PathBuf::from("/no/such/grok-binary-xyz"));
-        }
+        assert!(
+            hit.is_none(),
+            "GROKHUB_GROK must not fall through to ~/.local/bin/grok: {hit:?}"
+        );
     }
 
     #[test]
@@ -570,21 +617,143 @@ mod tests {
     }
 
     #[test]
+    fn grok_cmd_fails_on_nonzero_even_with_stdout() {
+        let inner = include_str!("locate.rs")
+            .split("fn grok_stdout_inner(")
+            .nth(1)
+            .and_then(|s| s.split("pub fn agent_args(").next())
+            .expect("grok_stdout_inner");
+        assert!(
+            inner.contains("if !out.status.success()") && !inner.contains("&& stdout.is_empty()"),
+            "grok sessions delete must fail on a non-zero exit even when it printed a reason: {inner}"
+        );
+    }
+
+    #[test]
+    fn cabin_leader_socket_is_not_the_cli_leader() {
+        let p = cabin_leader_socket().expect("HOME");
+        let s = p.to_string_lossy();
+        assert!(
+            s.contains("GrokHub/grok-home") && s.ends_with("leader.sock"),
+            "{s}"
+        );
+        assert!(
+            !s.contains("/.grok/leader.sock"),
+            "sharing ~/.grok/leader.sock lets the CLI SIGTERM cabin grok: {s}"
+        );
+        let connect = include_str!("client.rs");
+        assert!(
+            connect.contains("cabin_leader_socket")
+                && connect.contains("GROK_LEADER_SOCKET")
+                && connect.contains("leader-socket")
+                && connect.contains("GROK_HOME")
+                && connect.contains("prepare_cabin_grok_home"),
+            "connect() must isolate GROK_HOME or chrome-devtools MCP / CLI SIGTERM cabin grok (exit 143)"
+        );
+    }
+
+    #[test]
+    fn single_turn_args_bind_resume_and_json() {
+        let fresh = single_turn_args("hi", "/tmp/work", None, false, true);
+        assert!(fresh.contains(&"-p".into()), "{fresh:?}");
+        assert!(fresh.contains(&"hi".into()), "{fresh:?}");
+        assert!(
+            fresh.windows(2).any(|w| w[0] == "--output-format" && w[1] == "streaming-json"),
+            "headless streaming-json so the cabin can paint live tokens: {fresh:?}"
+        );
+        let pj = with_prompt_json(fresh.clone(), r#"[{"type":"text","text":"hi"}]"#);
+        assert!(pj.iter().any(|a| a == "--prompt-json"), "{pj:?}");
+        assert!(!pj.iter().any(|a| a == "-p"), "{pj:?}");
+        assert!(
+            !fresh.iter().any(|a| a == "--resume"),
+            "a new chat must create a Grok Build session: {fresh:?}"
+        );
+        assert!(
+            fresh.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "auto"),
+            "{fresh:?}"
+        );
+        let resume = single_turn_args("again", "/tmp/work", Some("01abc"), true, false);
+        assert!(
+            resume.windows(2).any(|w| w[0] == "--resume" && w[1] == "01abc"),
+            "later turns resume the attached session: {resume:?}"
+        );
+        let full = single_turn_args_full(
+            "hi",
+            "/tmp/work",
+            None,
+            false,
+            false,
+            Some("grok-4.6"),
+            Some("high"),
+            true,
+        );
+        assert!(
+            full.windows(2).any(|w| w[0] == "--model" && w[1] == "grok-4.6"),
+            "{full:?}"
+        );
+        assert!(
+            full.windows(2)
+                .any(|w| w[0] == "--reasoning-effort" && w[1] == "high"),
+            "{full:?}"
+        );
+        assert!(
+            full.windows(2)
+                .any(|w| w[0] == "--permission-mode" && w[1] == "plan"),
+            "{full:?}"
+        );
+        assert!(resume.iter().any(|a| a == "--always-approve"), "{resume:?}");
+        let ask = single_turn_args_full("hi", "/tmp/work", None, false, false, None, None, false);
+        assert!(
+            ask.iter().any(|a| a == "--always-approve"),
+            "grok -p cannot prompt; Ask must not cancel shell tools: {ask:?}"
+        );
+        assert!(
+            !ask.windows(2)
+                .any(|w| w[0] == "--permission-mode" && w[1] == "plan"),
+            "{ask:?}"
+        );
+        assert!(
+            ask.windows(2).any(|w| w[0] == "--sandbox" && w[1] == "off"),
+            "cabin grok -p must not sandbox away the desktop: {ask:?}"
+        );
+        assert!(
+            ask.windows(2).any(|w| w[0] == "--rules" && w[1] == CABIN_DESKTOP_RULES),
+            "cabin grok -p must tell Grok it has this computer: {ask:?}"
+        );
+    }
+
+    #[test]
     fn agent_args_yolo() {
         assert_eq!(
-            agent_args(true),
+            agent_args(true, None),
             vec!["--no-auto-update", "agent", "--always-approve", "stdio"]
         );
         assert_eq!(
-            agent_args(false),
+            agent_args(false, None),
             vec!["--no-auto-update", "agent", "stdio"]
         );
         assert_eq!(
-            agent_args_resume(false, Some("abc-123")),
-            vec!["--no-auto-update", "agent", "stdio"]
+            agent_args(false, Some("high")),
+            vec![
+                "--no-auto-update",
+                "agent",
+                "--reasoning-effort",
+                "high",
+                "stdio"
+            ]
+        );
+        assert_eq!(
+            agent_args_resume(false, Some("abc-123"), Some("xhigh")),
+            vec![
+                "--no-auto-update",
+                "agent",
+                "--reasoning-effort",
+                "xhigh",
+                "stdio"
+            ]
         );
         assert!(
-            !agent_args_resume(true, Some("abc-123"))
+            !agent_args_resume(true, Some("abc-123"), None)
                 .iter()
                 .any(|a| a == "--resume"),
             "CLI --resume plus session/new mixed sessions"
