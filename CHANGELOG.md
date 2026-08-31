@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.7.1 — 2026-08-31
+
+GrokHub cabin for Grok Build **1.0.14** alpha (parity with Linux `8ffd565`, plus Cursor #8).
+
+- `/usage` also runs `grok usage <session>` for persisted per-turn tokens and cost.
+- Retry status in the composer shows a short reason.
+- Failed task/todo tool calls stay on the Queue as **failed**.
+- `/inspect` notes Grok Build version and that Claude bypass locks are advisory.
+- Subagent coordinator “unreachable” retries instead of killing the turn.
+- `/models` lists per-effort model ids when the CLI prints them.
+- A chat opens on its newest message, with a way back down (Cursor #8).
+
 ## 2.7.0 — 2026-08-31
 
 Parity with Linux after Cursor PRs #5–#7:

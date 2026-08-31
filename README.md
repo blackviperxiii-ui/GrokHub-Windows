@@ -2,11 +2,11 @@
 
 Native Rust cabin (egui). Not Electron. Not Tauri.
 
-**v2.7.0** — Grok Build 1.0.13, History 1:1 with `grok sessions`, desktop filesystem/shell. Per-user installer.
+**v2.7.1** — Grok Build **1.0.14**. History is `grok sessions` 1:1. `/usage` includes persisted session spend. Retry status shows why. A chat opens on its newest message. Per-user installer.
 
 ## Install
 
-1. Download **GrokHub-Setup-2.7.0.exe** from [Releases](https://github.com/blackviperxiii-ui/GrokHub-Windows/releases/latest).
+1. Download **GrokHub-Setup-2.7.1.exe** from [Releases](https://github.com/blackviperxiii-ui/GrokHub-Windows/releases/latest).
 2. Run it (no admin). Installs to `%LOCALAPPDATA%\Programs\GrokHub`.
 3. Launch GrokHub. Close hides to the tray; Quit from the tray.
 
