@@ -8,6 +8,12 @@ use std::time::{Duration, Instant};
 /// SOUL/USER/MEMORY on the UI thread. Bigger files freeze kick_model and the editor.
 pub const MEMORY_FILE_CAP: usize = 1024 * 1024;
 
+/// JSON stores grow with ordinary use — `threads.json` holds the whole chat history — so
+/// they get a far larger ceiling than the markdown memory files. Anything over the cap is
+/// quarantined rather than parsed: a severed JSON token deserializes to nothing, and the
+/// next persist would write that nothing back over the user's data.
+pub const JSON_STORE_CAP: usize = 32 * 1024 * 1024;
+
 /// Write, fsync, then rename so a kill mid-persist cannot leave a truncated JSON.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let dir = path.parent().ok_or_else(|| "atomic write needs a parent".to_string())?;
@@ -17,7 +23,10 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .and_then(|s| s.to_str())
         .ok_or_else(|| "atomic write needs a file name".to_string())?;
     let tmp = dir.join(format!(".{name}.tmp"));
-    let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    // The temp file holds the same bytes as the destination, so it has to be private from
+    // the moment it exists. Creating it 0644 and chmodding after the rename leaves the
+    // console key and OAuth refresh token world-readable for the whole write.
+    let mut f = create_private(&tmp).map_err(|e| e.to_string())?;
     f.write_all(bytes).map_err(|e| e.to_string())?;
     f.sync_all().map_err(|e| e.to_string())?;
     drop(f);
@@ -29,6 +38,26 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Create (or replace) a file that is 0600 before any bytes reach it.
+#[cfg(unix)]
+pub fn create_private(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // `mode` only applies to a fresh inode, so drop any leftover temp from a killed write
+    // instead of inheriting its permissions.
+    let _ = fs::remove_file(path);
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+pub fn create_private(path: &Path) -> std::io::Result<fs::File> {
+    fs::File::create(path)
+}
+
 #[cfg(unix)]
 fn restrict_private(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -37,6 +66,80 @@ fn restrict_private(path: &Path) {
 
 #[cfg(not(unix))]
 fn restrict_private(_path: &Path) {}
+
+enum StoreRead {
+    Missing,
+    Text(String),
+    Unusable,
+}
+
+fn read_store(path: &Path, cap: usize) -> StoreRead {
+    let meta = match fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return StoreRead::Missing,
+    };
+    if meta.len() > cap as u64 {
+        return StoreRead::Unusable;
+    }
+    match fs::File::open(path) {
+        Ok(mut f) => {
+            let mut raw = String::new();
+            match f.read_to_string(&mut raw) {
+                Ok(_) => StoreRead::Text(raw),
+                Err(_) => StoreRead::Unusable,
+            }
+        }
+        Err(_) => StoreRead::Missing,
+    }
+}
+
+/// Move a store the loader could not parse out of the way, returning the new path.
+///
+/// Without this the caller falls back to a default value that the next persist tick
+/// writes straight back over the original file, turning one unreadable store into
+/// permanent data loss.
+pub fn quarantine(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name().and_then(|s| s.to_str())?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let aside = path.with_file_name(format!("{name}.corrupt-{stamp}"));
+    fs::rename(path, &aside).ok()?;
+    Some(aside)
+}
+
+/// Load a JSON store, quarantining it rather than silently returning `fallback` over data
+/// that is merely unreadable. A missing or empty store is normal and yields `fallback`.
+pub fn load_json_or<T, F>(path: &Path, cap: usize, fallback: F) -> T
+where
+    T: serde::de::DeserializeOwned,
+    F: FnOnce() -> T,
+{
+    let raw = match read_store(path, cap) {
+        StoreRead::Missing => return fallback(),
+        StoreRead::Unusable => {
+            quarantine(path);
+            return fallback();
+        }
+        StoreRead::Text(raw) => raw,
+    };
+    if raw.trim().is_empty() {
+        return fallback();
+    }
+    match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => {
+            quarantine(path);
+            fallback()
+        }
+    }
+}
+
+/// `load_json_or` with `T::default()` as the fallback.
+pub fn load_json<T: Default + serde::de::DeserializeOwned>(path: &Path, cap: usize) -> T {
+    load_json_or(path, cap, T::default)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,8 +158,6 @@ pub struct AppConfig {
     pub voice_model: String,
     #[serde(default)]
     pub cabin_eyes: bool,
-    #[serde(default = "default_autonomy")]
-    pub autonomy: u8,
     /// Git clone used by Settings → Update / `grokhub --update`.
     #[serde(default)]
     pub source_dir: String,
@@ -67,8 +168,6 @@ pub struct AppConfig {
     #[serde(default = "default_host_cap")]
     pub host_hour_cap: u32,
     #[serde(default)]
-    pub approve_risky_only: bool,
-    #[serde(default)]
     pub current_thread: String,
     #[serde(default)]
     pub connector_hosts: Vec<String>,
@@ -78,6 +177,12 @@ pub struct AppConfig {
     pub mode: String,
     #[serde(default)]
     pub reasoning_effort: String,
+    /// Composer session pill — chat / plan / ask.
+    #[serde(default = "default_session_mode")]
+    pub session_mode: String,
+    /// Composer permission pill — ask / auto. Always-approve is a per-run choice.
+    #[serde(default = "default_permission_mode")]
+    pub permission_mode: String,
     #[serde(default = "default_quiet_start")]
     pub quiet_start: String,
     #[serde(default = "default_quiet_end")]
@@ -99,10 +204,6 @@ fn default_yolo() -> bool {
     false
 }
 
-fn default_autonomy() -> u8 {
-    4
-}
-
 fn default_host_on() -> bool {
     true
 }
@@ -115,11 +216,11 @@ fn default_close_to_tray() -> bool {
     true
 }
 
-fn default_quiet_start() -> String {
+pub fn default_quiet_start() -> String {
     "22:00".into()
 }
 
-fn default_quiet_end() -> String {
+pub fn default_quiet_end() -> String {
     "07:00".into()
 }
 
@@ -139,6 +240,14 @@ fn default_reasoning_effort() -> String {
     "high".into()
 }
 
+fn default_session_mode() -> String {
+    "chat".into()
+}
+
+fn default_permission_mode() -> String {
+    "ask".into()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -149,17 +258,17 @@ impl Default for AppConfig {
             imagine_model: String::new(),
             voice_model: String::new(),
             cabin_eyes: false,
-            autonomy: default_autonomy(),
             source_dir: String::new(),
             project_dir: String::new(),
             host_on: default_host_on(),
             host_hour_cap: default_host_cap(),
-            approve_risky_only: false,
             current_thread: String::new(),
             connector_hosts: Vec::new(),
             close_to_tray: default_close_to_tray(),
             mode: String::new(),
             reasoning_effort: default_reasoning_effort(),
+            session_mode: default_session_mode(),
+            permission_mode: default_permission_mode(),
             quiet_start: default_quiet_start(),
             quiet_end: default_quiet_end(),
             daily_auto_cap: default_daily_auto(),
@@ -240,8 +349,7 @@ fn hostname_cmd() -> Option<String> {
 
 pub fn load() -> AppConfig {
     let path = config_dir().join("app.json");
-    let raw = read_file_capped(&path, MEMORY_FILE_CAP);
-    let mut cfg: AppConfig = serde_json::from_str(&raw).unwrap_or_default();
+    let mut cfg: AppConfig = load_json(&path, JSON_STORE_CAP);
     cfg.host_on = true;
     // Leftover `"yolo": true` from older cabins must not disable the bound-tree jail.
     cfg.yolo = false;
@@ -255,6 +363,18 @@ pub fn load() -> AppConfig {
     } else if let Some(effort) = grokhub_core::parse_reasoning_effort(&cfg.reasoning_effort) {
         cfg.reasoning_effort = effort.to_string();
     }
+    cfg.session_mode = grokhub_acp::SessionMode::parse(&cfg.session_mode)
+        .unwrap_or(grokhub_acp::SessionMode::Chat)
+        .as_str()
+        .to_string();
+    // Always-approve is a per-run choice, same as the yolo reset above: a cabin must not
+    // boot into blanket approval because one turn needed it last week.
+    cfg.permission_mode = match grokhub_acp::PermissionMode::parse(&cfg.permission_mode) {
+        Some(grokhub_acp::PermissionMode::Auto) => grokhub_acp::PermissionMode::Auto,
+        _ => grokhub_acp::PermissionMode::Ask,
+    }
+    .as_str()
+    .to_string();
     cfg
 }
 
@@ -290,12 +410,12 @@ pub fn read_file_capped(path: &Path, cap: usize) -> String {
         Ok(f) => f,
         Err(_) => return String::new(),
     };
-    let mut buf = vec![0u8; cap];
-    let n = match f.read(&mut buf) {
-        Ok(n) => n,
-        Err(_) => return String::new(),
-    };
-    buf.truncate(n);
+    // `Read::read` may stop short of the buffer, so loop to EOF or the cap instead of
+    // trusting one call and silently dropping the rest of the file.
+    let mut buf = Vec::new();
+    if f.take(cap as u64).read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
     while !buf.is_empty() && std::str::from_utf8(&buf).is_err() {
         buf.pop();
     }
@@ -369,8 +489,7 @@ pub fn chat_path() -> PathBuf {
 }
 
 pub fn load_chat() -> Vec<(String, String)> {
-    let raw = read_file_capped(&chat_path(), MEMORY_FILE_CAP);
-    serde_json::from_str(&raw).unwrap_or_default()
+    load_json(&chat_path(), JSON_STORE_CAP)
 }
 
 pub fn workboard_path() -> PathBuf {
@@ -378,8 +497,7 @@ pub fn workboard_path() -> PathBuf {
 }
 
 pub fn load_board() -> Vec<BoardCard> {
-    let raw = read_file_capped(&workboard_path(), MEMORY_FILE_CAP);
-    serde_json::from_str(&raw).unwrap_or_default()
+    load_json(&workboard_path(), JSON_STORE_CAP)
 }
 
 pub fn save_board(cards: &[BoardCard]) -> Result<(), String> {
@@ -392,8 +510,8 @@ pub fn wall_dir() -> PathBuf {
 }
 
 pub fn imagine_dir() -> PathBuf {
-    if let Some(home) = grokhub_core::user_home() {
-        return home.join("GrokHub-Work").join("imagine");
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join("GrokHub-Work/imagine");
     }
     config_dir().join("imagine")
 }
@@ -428,6 +546,7 @@ mod tests {
         );
         assert_eq!(loaded.device_name, "cabin");
         assert_eq!(loaded.source_dir, "/tmp/Grok-Hub");
+        assert_eq!(loaded.reasoning_effort, "high");
         let body = fs::read_to_string(config_dir().join("app.json")).expect("app.json");
         assert!(
             !body.contains("xai-test") && !body.to_ascii_lowercase().contains("apikey"),
@@ -494,6 +613,52 @@ mod tests {
         let loaded = load();
         assert!(!loaded.device_name.trim().is_empty());
         assert_eq!(loaded.device_name, default_device_name());
+        let _ = fs::remove_dir_all(&root);
+        std::env::remove_var("GROKHUB_CONFIG");
+    }
+
+    #[test]
+    fn composer_pills_survive_a_restart_but_always_approve_does_not() {
+        let _g = TEST_CONFIG_LOCK.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("grokhub-pills-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var("GROKHUB_CONFIG", &root);
+        let mut cfg = AppConfig::default();
+        assert_eq!(cfg.session_mode, "chat");
+        assert_eq!(cfg.permission_mode, "ask");
+        cfg.session_mode = "plan".into();
+        cfg.permission_mode = "auto".into();
+        save(&cfg).expect("save");
+        let loaded = load();
+        assert_eq!(loaded.session_mode, "plan");
+        assert_eq!(loaded.permission_mode, "auto");
+        cfg.permission_mode = "always-approve".into();
+        save(&cfg).expect("save");
+        assert_eq!(
+            load().permission_mode,
+            "ask",
+            "a cabin must not boot into blanket approval because one turn needed it"
+        );
+        cfg.session_mode = "nonsense".into();
+        cfg.permission_mode = "nonsense".into();
+        save(&cfg).expect("save");
+        let fallback = load();
+        assert_eq!(fallback.session_mode, "chat");
+        assert_eq!(fallback.permission_mode, "ask");
+        let _ = fs::remove_dir_all(&root);
+        std::env::remove_var("GROKHUB_CONFIG");
+    }
+
+    #[test]
+    fn reasoning_effort_migrates_from_legacy_mode() {
+        let _g = TEST_CONFIG_LOCK.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("grokhub-effort-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var("GROKHUB_CONFIG", &root);
+        fs::create_dir_all(&root).expect("dir");
+        fs::write(root.join("app.json"), r#"{"mode":"max"}"#).expect("write");
+        let loaded = load();
+        assert_eq!(loaded.reasoning_effort, "xhigh");
         let _ = fs::remove_dir_all(&root);
         std::env::remove_var("GROKHUB_CONFIG");
     }
@@ -571,7 +736,6 @@ mod tests {
             !load().yolo,
             "leftover yolo true must not disable the bound-tree jail"
         );
-        assert_eq!(loaded.autonomy, 4);
         assert!(
             !loaded.yolo,
             "Ask is the default — leftover yolo true disables the bound-tree jail"
@@ -614,70 +778,130 @@ mod tests {
                 .and_then(|s| s.split(next).next())
                 .unwrap_or(name);
             assert!(
-                slice.contains("read_file_capped") && !slice.contains("read_to_string"),
-                "boot must not slurp a huge {name}: {slice}"
+                slice.contains("load_json") && !slice.contains("read_to_string"),
+                "boot must not slurp an unbounded {name}: {slice}"
+            );
+            assert!(
+                !slice.contains("MEMORY_FILE_CAP"),
+                "{name} is a JSON store: capping the read severs it mid-token, so the \
+                 loader returns the default and the next persist saves that over the \
+                 user's data: {slice}"
             );
         }
     }
 
     #[test]
-    fn dirs_fallback_windows_shaped() {
-        let _g = TEST_CONFIG_LOCK.lock().unwrap();
-        let src = include_str!("config.rs");
-        let fallback = src
-            .split("fn dirs_fallback()")
-            .nth(1)
-            .and_then(|s| s.split("pub fn memory_dir(").next())
-            .expect("dirs_fallback");
+    fn oversized_json_store_is_quarantined_not_wiped() {
+        let root = std::env::temp_dir().join(format!("grokhub-oversize-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root");
+        let path = root.join("threads.json");
+
+        // A real store that happens to be bigger than the cap we read it with.
+        let rows: Vec<String> = (0..200).map(|i| format!("\"row-{i}\"")).collect();
+        let body = format!("[{}]", rows.join(","));
+        fs::write(&path, &body).expect("write");
+        let tiny_cap = 64;
+        assert!(body.len() > tiny_cap, "fixture must exceed the cap");
+
+        let loaded: Vec<String> = load_json(&path, tiny_cap);
+        assert!(loaded.is_empty(), "an over-cap store cannot be parsed");
         assert!(
-            fallback.contains("APPDATA") && fallback.contains("GrokHub"),
-            "Windows dirs_fallback must use %APPDATA%\\GrokHub: {fallback}"
+            !path.exists(),
+            "the loader fell back to a default, so the original must be moved aside — \
+             otherwise the next persist writes the empty default over it"
         );
-        assert!(
-            fallback.contains("user_home"),
-            "dirs_fallback must fall back through user_home: {fallback}"
+        let saved: Vec<_> = fs::read_dir(&root)
+            .expect("dir")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("threads.json.corrupt-"))
+            .collect();
+        assert_eq!(saved.len(), 1, "exactly one quarantined copy: {saved:?}");
+        let kept = fs::read_to_string(root.join(&saved[0])).expect("quarantined");
+        assert_eq!(kept, body, "the quarantined copy must be byte-identical");
+
+        // Within the cap the same store loads normally and is left in place.
+        fs::write(&path, &body).expect("rewrite");
+        let loaded: Vec<String> = load_json(&path, JSON_STORE_CAP);
+        assert_eq!(loaded.len(), 200);
+        assert!(path.exists(), "a readable store must not be quarantined");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn corrupt_json_store_is_quarantined_and_missing_one_is_not() {
+        let root = std::env::temp_dir().join(format!("grokhub-corrupt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root");
+
+        let torn = root.join("projects.json");
+        fs::write(&torn, "[{\"id\":\"a\",\"na").expect("write");
+        let loaded: Vec<String> = load_json(&torn, JSON_STORE_CAP);
+        assert!(loaded.is_empty());
+        assert!(!torn.exists(), "torn JSON must be preserved under a new name");
+
+        // Missing and empty are ordinary first-run states, not corruption.
+        let absent = root.join("absent.json");
+        let loaded: Vec<String> = load_json(&absent, JSON_STORE_CAP);
+        assert!(loaded.is_empty());
+        let empty = root.join("empty.json");
+        fs::write(&empty, "   \n").expect("write");
+        let loaded: Vec<String> = load_json(&empty, JSON_STORE_CAP);
+        assert!(loaded.is_empty());
+        assert!(empty.exists(), "an empty store must not be quarantined");
+        let junk: Vec<_> = fs::read_dir(&root)
+            .expect("dir")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".corrupt-"))
+            .collect();
+        assert_eq!(junk.len(), 1, "only the torn store is quarantined: {junk:?}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_temp_is_private_before_the_rename() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("grokhub-priv-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root");
+        let path = root.join("secrets.json");
+
+        // The temp file holds the same secret bytes as the destination, so it must never
+        // exist as 0644 — a chmod after the rename is a window, not a fix.
+        let tmp = root.join(".secrets.json.tmp");
+        let f = create_private(&tmp).expect("create");
+        drop(f);
+        let mode = fs::metadata(&tmp).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "temp file must be created 0600, got {mode:o}");
+        let _ = fs::remove_file(&tmp);
+
+        atomic_write(&path, b"{\"apiKey\":\"xai-secret\"}").expect("write");
+        let mode = fs::metadata(&path).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "destination must be 0600, got {mode:o}");
+        assert!(!tmp.exists(), "temp must not survive a successful write");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_file_capped_loops_to_the_cap() {
+        let root = std::env::temp_dir().join(format!("grokhub-shortread-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("root");
+        let path = root.join("big.md");
+        let body = "x".repeat(300_000);
+        fs::write(&path, &body).expect("write");
+        assert_eq!(
+            read_file_capped(&path, MEMORY_FILE_CAP).len(),
+            body.len(),
+            "one short read must not silently drop the rest of the file"
         );
-
-        let old_cfg = std::env::var_os("GROKHUB_CONFIG");
-        let old_home = std::env::var_os("HOME");
-        let old_up = std::env::var_os("USERPROFILE");
-        let old_app = std::env::var_os("APPDATA");
-        std::env::remove_var("GROKHUB_CONFIG");
-
-        #[cfg(windows)]
-        {
-            std::env::set_var("APPDATA", r"C:\Users\viper\AppData\Roaming");
-            let d = config_dir();
-            assert!(
-                d.ends_with("GrokHub")
-                    && d.to_string_lossy().contains("AppData"),
-                "{d:?}"
-            );
-        }
-
-        #[cfg(not(windows))]
-        {
-            std::env::remove_var("HOME");
-            std::env::set_var("USERPROFILE", "/tmp/win-shaped-home");
-            let d = config_dir();
-            assert_eq!(d, PathBuf::from("/tmp/win-shaped-home/.config/GrokHub"));
-        }
-
-        match old_cfg {
-            Some(v) => std::env::set_var("GROKHUB_CONFIG", v),
-            None => std::env::remove_var("GROKHUB_CONFIG"),
-        }
-        match old_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match old_up {
-            Some(v) => std::env::set_var("USERPROFILE", v),
-            None => std::env::remove_var("USERPROFILE"),
-        }
-        match old_app {
-            Some(v) => std::env::set_var("APPDATA", v),
-            None => std::env::remove_var("APPDATA"),
-        }
+        assert_eq!(read_file_capped(&path, 1000).len(), 1000, "the cap still holds");
+        let _ = fs::remove_dir_all(&root);
     }
 }

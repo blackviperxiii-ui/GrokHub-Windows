@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.7.0 — 2026-08-31
+
+Parity with Linux after Cursor PRs #5–#7:
+
+- JSON stores no longer wipe chat history at 1 MiB; corrupt files are quarantined.
+- Hub pairing holes closed; hub state is durable.
+- Clock automations fire again; composer pills persist; `/usage` counts Imagine and tokens.
+- Searchable History, cabin skills on the Skills page, honest settings knobs.
+
 ## 2.7.0 — 2026-08-29
 
 GrokHub cabin for Grok Build **1.0.13** stable.
