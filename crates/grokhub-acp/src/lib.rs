@@ -34,7 +34,7 @@ pub use locate::{
     single_turn_args_full, which,
 };
 pub use protocol::{
-    merge_tool_card, AcpEvent, PermissionAsk, PermissionMode, SessionMode, ToolCard,
+    merge_tool_card, AcpEvent, ElicitAsk, PermissionAsk, PermissionMode, SessionMode, ToolCard,
     PROTOCOL_VERSION,
 };
 pub use stream::{
