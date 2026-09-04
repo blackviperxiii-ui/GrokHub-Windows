@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.1 — 2026-09-04
+
+- Windows build: Unix-only grok-child isolation is `cfg(unix)` so `grokhub.exe` compiles.
+
 ## 2.9.0 — 2026-09-04
 
 GrokHub cabin for Grok Build **1.0.21** (covers 1.0.18–1.0.21). Cursor **#9** ported.
