@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.9.0 — 2026-09-04
+
+GrokHub cabin for Grok Build **1.0.21** (covers 1.0.18–1.0.21). Cursor **#9** ported.
+
+- Host receipts keep non-UTF-8 lines instead of dropping them.
+- Headless `grok -p` spend fields ride through `/usage`.
+- First-launch `grok.exe` install, tray, and `%APPDATA%` paths stay.
+
 ## 2.8.2 — 2026-09-01
 
 - New chat and sidebar History clicks put the cursor in the composer.
