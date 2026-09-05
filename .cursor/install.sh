@@ -21,3 +21,10 @@ fi
 
 # Warm the workspace build so agents start with everything compiled.
 cargo build --workspace --locked
+
+# First-install Grok Build CLI alpha. Channel must be passed to bash, not curl.
+# scripts/install-grok-cli.sh is overlay-safe and does not fail the cabin setup.
+if [[ -x "$ROOT/scripts/install-grok-cli.sh" ]]; then
+  PREFIX="${PREFIX:-$HOME/.local}" bash "$ROOT/scripts/install-grok-cli.sh" \
+    || echo "grok: install-grok-cli.sh continued"
+fi

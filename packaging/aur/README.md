@@ -14,7 +14,7 @@ cd GrokHub
 grokhub
 ```
 
-`install.sh --user` installs the cabin GUI and the official Grok Build CLI (`grok` from https://x.ai/cli).
+`install.sh --user` installs the cabin GUI and the official Grok Build CLI alpha (`grok` from https://x.ai/cli with `GROK_CHANNEL=alpha`).
 
 ## makepkg (system)
 
@@ -32,6 +32,6 @@ makepkg -si
 | `/usr/bin/grokhub` | Cabin |
 | `/usr/bin/grokhub-hub` | Standalone LAN hub |
 | `/usr/bin/grok` | Grok Build CLI (official xAI installer, `post_install`) |
-| `/usr/lib/grokhub/install-grok-cli.sh` | Helper that runs `https://x.ai/cli/install.sh` |
+| `/usr/lib/grokhub/install-grok-cli.sh` | Helper that runs `https://x.ai/cli/install.sh` with `GROK_CHANNEL=alpha` |
 | `/usr/share/applications/grokhub.desktop` | App menu |
 | `~/.config/GrokHub` | Config + memory (`app.json`, `projects.json`, `secrets.json`) |

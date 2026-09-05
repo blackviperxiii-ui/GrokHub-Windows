@@ -11,8 +11,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
-const OFFICIAL_PS: &str = "irm https://x.ai/cli/install.ps1 | iex";
-const OFFICIAL_SH: &str = "curl -fsSL https://x.ai/cli/install.sh | bash";
+const OFFICIAL_PS: &str = "$env:GROK_CHANNEL='alpha'; irm https://x.ai/cli/install.ps1 | iex";
+const OFFICIAL_SH: &str = "curl -fsSL https://x.ai/cli/install.sh | GROK_CHANNEL=alpha bash";
 
 /// Platform one-liner shown in Settings.
 pub fn grok_cli_install_cmd() -> &'static str {
@@ -46,7 +46,7 @@ pub fn install_grok_blocking() -> Result<PathBuf, String> {
         prepend_grok_bin_to_process_path();
         invalidate_grok_bin_cache();
         find_grok().ok_or_else(|| {
-            "Grok Build CLI install finished but grok.exe was not found — run: irm https://x.ai/cli/install.ps1 | iex".into()
+            "Grok Build CLI install finished but grok.exe was not found — run: $env:GROK_CHANNEL='alpha'; irm https://x.ai/cli/install.ps1 | iex".into()
         })
     }
     #[cfg(not(windows))]
@@ -101,7 +101,7 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'
 $ver = $null
-foreach ($u in @('https://x.ai/cli/stable','https://storage.googleapis.com/grok-build-public-artifacts/cli/stable')) {
+foreach ($u in @('https://x.ai/cli/alpha','https://storage.googleapis.com/grok-build-public-artifacts/cli/alpha')) {
   try { $ver = (Invoke-WebRequest -Uri $u -UseBasicParsing).Content.Trim(); if ($ver -match '^\d+\.\d+\.\d+') { break } } catch {}
 }
 if (-not $ver) { throw 'could not resolve Grok Build version' }
@@ -178,6 +178,7 @@ mod tests {
         #[cfg(not(windows))]
         assert!(cmd.contains("install.sh"), "{cmd}");
         assert!(cmd.contains("x.ai/cli"), "{cmd}");
+        assert!(cmd.contains("alpha"), "{cmd}");
     }
 
     #[test]
@@ -230,6 +231,12 @@ mod tests {
         assert!(src.contains("install.ps1"), "{src}");
         assert!(src.contains("WindowStyle") && src.contains("Hidden"), "{src}");
         assert!(src.contains("storage.googleapis.com/grok-build-public-artifacts"), "{src}");
+        assert!(src.contains("x.ai/cli/alpha"), "{src}");
+        let pointer = format!("x.ai/cli/{}", "stable");
+        assert!(
+            !src.contains(&pointer),
+            "Windows first-run must download alpha, not {pointer}"
+        );
     }
 
 }

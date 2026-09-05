@@ -3,6 +3,7 @@
 ## 2.9.1 — 2026-09-04
 
 - Windows build: Unix-only grok-child isolation is `cfg(unix)` so `grokhub.exe` compiles.
+- First install and `/update` install Grok Build CLI **alpha** (`GROK_CHANNEL=alpha`, `grok update --alpha`). Overlay origin is GitHub `GrokHub-Windows`.
 
 ## 2.9.0 — 2026-09-04
 

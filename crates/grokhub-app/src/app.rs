@@ -4430,7 +4430,7 @@ impl Cabin {
             self.hands_attach = false;
             self.eyes_attach = false;
             self.speak_next = false;
-            self.status = "Install Grok Build (x.ai/cli) or Connect Grok in Settings".into();
+            self.status = "Install Grok Build alpha (x.ai/cli) or Connect Grok in Settings".into();
             return;
         }
         if let Some(name) = self.attach_name.as_deref() {
@@ -6293,7 +6293,7 @@ impl Cabin {
         }
         if replay.is_none() && !self.can_agent() {
             self.mark_auto_skipped(&a.id, now_ms);
-            self.status = "Install Grok Build (x.ai/cli) or Connect Grok in Settings".into();
+            self.status = "Install Grok Build alpha (x.ai/cli) or Connect Grok in Settings".into();
             return;
         }
         self.mark_auto_ran(&a.id, now_ms);
@@ -7147,7 +7147,7 @@ impl Cabin {
 
     fn kick_model(&mut self, consume_attach: bool) {
         if !self.can_agent() {
-            self.status = "Install Grok Build (x.ai/cli) or Connect Grok in Settings".into();
+            self.status = "Install Grok Build alpha (x.ai/cli) or Connect Grok in Settings".into();
             return;
         }
         if !self.kick_skip
@@ -11415,7 +11415,7 @@ impl Cabin {
                                 crate::cards::settings_note(
                                     ui,
                                     if grok_missing {
-                                        "Install Grok Build (x.ai/cli), then grok login."
+                                        "Install Grok Build alpha (x.ai/cli), then grok login."
                                     } else {
                                         "Run grok login. Chat, Imagine, and Fast chips use that token."
                                     },
@@ -12374,9 +12374,9 @@ impl Cabin {
                                                             crate::cards::settings_field(ui, "Bound project", "The world. Host, Imagine, and memory stay here.", &mut self.cfg.project_dir, false);
                                                         }
                                                         SettingsSec::Update => {
-                                                            crate::cards::settings_note(ui, "Pulls origin/main, overlays the GUI, then runs grok update on the current channel (does not switch alpha/stable). The clone must be on main. Does not wipe ~/.config/GrokHub.");
+                                                            crate::cards::settings_note(ui, "Pulls origin/main from GitHub, overlays the GUI, then installs or updates Grok Build CLI alpha (`grok update --alpha`). The clone must be on main. Does not wipe ~/.config/GrokHub.");
                                                             crate::cards::settings_field(ui, "Source clone", "Empty uses GROKHUB_SRC or the install receipt.", &mut self.cfg.source_dir, false);
-                                                            if crate::cards::settings_action(ui, "Install overlay", "Pulls this clone, overlays the GUI, and updates grok.", "Update") {
+                                                            if crate::cards::settings_action(ui, "Install overlay", "Pulls this clone from GitHub, overlays the GUI, and installs Grok Build CLI alpha.", "Update") {
                                                                 update = true;
                                                             }
                                                             if let Some(pct) = self.update_pct {
@@ -12798,7 +12798,7 @@ impl Cabin {
                     RichText::new(if grokhub_acp::find_grok().is_some() {
                         "No grok sessions listed yet."
                     } else {
-                        "Install Grok Build (x.ai/cli) to list sessions."
+                        "Install Grok Build alpha (x.ai/cli) to list sessions."
                     })
                     .size(13.0)
                     .color(crate::theme::muted()),

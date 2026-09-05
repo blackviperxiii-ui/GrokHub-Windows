@@ -10,7 +10,7 @@ Cabin owns: window, tray, project sidebar as cwd, LAN hub / Android, Hey Grok vo
 
 Grok Build owns: coding tools, bash, sandbox, permissions, plan mode, skills/plugins/MCP, sessions, `/imagine` when ACP supports it, and desktop computer-use.
 
-Transport: chat is headless `grok -p --output-format streaming-json` with `--sandbox off`, a desktop `--rules` line, and `--leader-socket` on the cabin socket (do not share `~/.grok/leader.sock`). New chats use the user `~/.grok` so tools and `grok sessions` match the TUI. ACP `grok agent stdio` is Ask (Allow / Deny). Night and phone `/v1/task` stay on `grok -p`. Do not vendor grok-build crates. Cabin overlay (`install.sh`) runs the official installer from `https://x.ai/cli` so `grok` is on PATH with `grokhub`.
+Transport: chat is headless `grok -p --output-format streaming-json` with `--sandbox off`, a desktop `--rules` line, and `--leader-socket` on the cabin socket (do not share `~/.grok/leader.sock`). New chats use the user `~/.grok` so tools and `grok sessions` match the TUI. ACP `grok agent stdio` is Ask (Allow / Deny). Night and phone `/v1/task` stay on `grok -p`. Do not vendor grok-build crates. Cabin overlay (`install.sh`) runs the official installer from `https://x.ai/cli` with `GROK_CHANNEL=alpha` so `grok` is on PATH with `grokhub`. The channel must be passed to bash (`curl | GROK_CHANNEL=alpha bash`); setting it only on curl leaves the installer on stable.
 
 ## Chat
 
@@ -32,4 +32,4 @@ Agent: `grok login` cached token, `grok.com` ACP auth, or `XAI_API_KEY`. Imagine
 
 ## Overlay vs agent updates
 
-Cabin overlay (`/update`) updates the GUI, then runs `grok update` on the current channel. It does not pass `--alpha` or `--stable`.
+Cabin overlay (`/update`) pulls this GitHub remote (`GrokHub-Windows`), updates the GUI, then runs `grok update --alpha` so first install and later overlays stay on Grok Build CLI alpha.

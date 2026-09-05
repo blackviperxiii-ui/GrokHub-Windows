@@ -94,9 +94,11 @@ fn git_origin_url(source: &Path) -> Result<String, String> {
 }
 
 /// Overlay pulls this GitHub remote until Cursor Origin is live.
-pub const GITHUB_REMOTE_URL: &str = "https://github.com/blackviperxiii-ui/GrokHub.git";
+pub const GITHUB_REMOTE_URL: &str = "https://github.com/blackviperxiii-ui/GrokHub-Windows.git";
 /// Leftover Cursor Origin clone — retarget to GitHub.
 pub const ORIGIN_REMOTE_URL: &str = "https://origin.cursor.com/viperxiii/GrokHub.git";
+/// First install and `/update` stay on Grok Build CLI alpha.
+pub const GROK_CLI_UPDATE_CMD: &str = "grok update --alpha";
 
 fn origin_norm(url: &str) -> String {
     let mut u = url.trim().trim_end_matches('/').to_ascii_lowercase();
@@ -113,7 +115,7 @@ fn origin_norm(url: &str) -> String {
 /// Same repo as `GITHUB_REMOTE_URL` (https or ssh).
 pub fn canonical_github_origin(url: &str) -> bool {
     let u = origin_norm(url);
-    u.contains("github.com/blackviperxiii-ui/grokhub") && !u.contains("grok-hub")
+    u.contains("github.com/blackviperxiii-ui/grokhub-windows")
 }
 
 /// Origin, old hyphenated GitHub, or any other GitHub GrokHub that is not canonical.
@@ -159,7 +161,7 @@ pub fn update_cmds(source: &Path) -> Result<Vec<String>, String> {
     }
     cmds.push(format!("git -C {src} pull --ff-only origin main"));
     cmds.push(format!("{src}/scripts/install.sh --user"));
-    cmds.push("grok update".into());
+    cmds.push(GROK_CLI_UPDATE_CMD.into());
     Ok(cmds)
 }
 
@@ -173,7 +175,7 @@ pub fn update_plan_steps(cmds: Vec<String>) -> Vec<HostPlanStep> {
             } else if cmd.contains("install.sh") {
                 "overlay ~/.local/bin — does not wipe config".into()
             } else if grok_cli_update_cmd(&cmd) {
-                "update Grok Build CLI on the current channel".into()
+                "update Grok Build CLI on the alpha channel".into()
             } else {
                 explain_host_risk(&cmd, host_risk(&cmd))
             };
@@ -424,7 +426,7 @@ mod tests {
             .unwrap();
         let no_origin = update_cmds(&root).unwrap();
         assert!(
-            no_origin[0].contains("remote add origin https://github.com/blackviperxiii-ui/GrokHub.git"),
+            no_origin[0].contains("remote add origin https://github.com/blackviperxiii-ui/GrokHub-Windows.git"),
             "{no_origin:?}"
         );
         assert!(no_origin[1].contains("pull --ff-only origin main"), "{no_origin:?}");
@@ -436,9 +438,10 @@ mod tests {
         let cmds = update_cmds(&root).unwrap();
         assert!(cmds[0].contains("pull --ff-only origin main"), "{cmds:?}");
         assert!(cmds[1].ends_with("--user"));
-        assert_eq!(cmds.last().map(String::as_str), Some("grok update"));
+        assert_eq!(cmds.last().map(String::as_str), Some("grok update --alpha"));
         assert!(!cmds.iter().any(|c| c.contains("set-url")), "{cmds:?}");
-        assert!(!cmds.iter().any(|c| c.contains("--alpha") || c.contains("--stable")), "{cmds:?}");
+        assert!(cmds.iter().any(|c| c.contains("--alpha")), "{cmds:?}");
+        assert!(!cmds.iter().any(|c| c.contains("--stable")), "{cmds:?}");
         assert!(!update_wipes_config(&cmds));
         let plan = update_plan_steps(cmds);
         assert!(plan[0].explain.contains("origin/main"), "{plan:?}");
@@ -579,12 +582,13 @@ mod tests {
             update_step_label("'/x/scripts/install.sh' --user"),
             "Installing overlay…"
         );
-        assert_eq!(update_step_label("grok update"), "Updating Grok Build CLI…");
+        assert_eq!(update_step_label("grok update --alpha"), "Updating Grok Build CLI…");
+        assert!(grok_cli_update_cmd("grok update --alpha"));
         assert!(grok_cli_update_cmd("grok update"));
         assert!(!grok_cli_update_cmd("echo grok update"));
         assert_eq!(update_step_label("echo hi"), "Updating…");
         assert_eq!(
-            update_step_label("git -C '/x' remote set-url origin https://github.com/blackviperxiii-ui/GrokHub.git"),
+            update_step_label("git -C '/x' remote set-url origin https://github.com/blackviperxiii-ui/GrokHub-Windows.git"),
             "Retargeting origin…"
         );
     }
@@ -596,13 +600,16 @@ mod tests {
         ));
         assert!(origin_needs_retarget(ORIGIN_REMOTE_URL));
         assert!(!origin_needs_retarget(GITHUB_REMOTE_URL));
-        assert!(!origin_needs_retarget(
+        assert!(origin_needs_retarget(
             "git@github.com:blackviperxiii-ui/GrokHub.git"
         ));
         assert!(!origin_needs_retarget("https://example.invalid/grokhub.git"));
         assert!(canonical_github_origin(GITHUB_REMOTE_URL));
         assert!(canonical_github_origin(
-            "git@github.com:blackviperxiii-ui/GrokHub.git"
+            "git@github.com:blackviperxiii-ui/GrokHub-Windows.git"
+        ));
+        assert!(!canonical_github_origin(
+            "https://github.com/blackviperxiii-ui/GrokHub.git"
         ));
 
         let root = std::env::temp_dir().join(format!("grokhub-src-gh-{}", std::process::id()));
@@ -615,12 +622,12 @@ mod tests {
             .unwrap();
         let cmds = update_cmds(&root).unwrap();
         assert!(
-            cmds[0].contains("remote set-url origin https://github.com/blackviperxiii-ui/GrokHub.git"),
+            cmds[0].contains("remote set-url origin https://github.com/blackviperxiii-ui/GrokHub-Windows.git"),
             "{cmds:?}"
         );
         assert!(cmds[1].contains("pull --ff-only origin main"), "{cmds:?}");
         assert!(cmds[2].ends_with("--user"), "{cmds:?}");
-        assert_eq!(cmds.last().map(String::as_str), Some("grok update"));
+        assert_eq!(cmds.last().map(String::as_str), Some("grok update --alpha"));
         let plan = update_plan_steps(cmds);
         assert!(plan[0].explain.contains("GitHub"), "{plan:?}");
         let _ = fs::remove_dir_all(&root);

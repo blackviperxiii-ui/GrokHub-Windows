@@ -10,10 +10,10 @@ Native Rust cabin (egui). Not Electron. Not Tauri.
 2. Run it (no admin). Installs to `%LOCALAPPDATA%\Programs\GrokHub`.
 3. Launch GrokHub. Close hides to the tray; Quit from the tray.
 
-If the installer could not vendor `grok.exe`, install Grok Build:
+If the installer could not vendor `grok.exe`, install Grok Build **alpha**:
 
 ```powershell
-irm https://x.ai/cli/install.ps1 | iex
+$env:GROK_CHANNEL='alpha'; irm https://x.ai/cli/install.ps1 | iex
 ```
 
 Then `grok login`.

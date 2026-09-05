@@ -214,7 +214,7 @@ impl SpawnOpts {
         reasoning_effort: Option<String>,
     ) -> Result<Self, String> {
         let program = find_grok().ok_or_else(|| {
-            "Grok Build CLI missing — install from x.ai/cli or set GROKHUB_GROK".to_string()
+            format!("{} or set GROKHUB_GROK", crate::doctor_missing_hint())
         })?;
         Ok(Self {
             args: agent_args(always_approve, reasoning_effort.as_deref()),
@@ -1321,7 +1321,7 @@ fn grok_p_child(
     worktree: bool,
 ) -> Result<Child, String> {
     let program = find_grok().ok_or_else(|| {
-        "Grok Build CLI missing — install from x.ai/cli or set GROKHUB_GROK".to_string()
+        format!("{} or set GROKHUB_GROK", crate::doctor_missing_hint())
     })?;
     let cwd_path = ensure_session_cwd(cwd)?;
     let mut args = crate::locate::single_turn_args_full(
