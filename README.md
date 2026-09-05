@@ -2,11 +2,11 @@
 
 Native Rust cabin (egui). Not Electron. Not Tauri.
 
-**v2.9.1** — Grok Build **1.0.21**. History is `grok sessions` 1:1. `/update` overlays the GUI and updates `grok`. MCP tools can ask for a form or URL. Per-user installer.
+**v2.9.2** — Grok Build **1.0.21** alpha. First install and `/update` install `grok` from the alpha channel. History is `grok sessions` 1:1. Per-user installer.
 
 ## Install
 
-1. Download **GrokHub-Setup-2.9.1.exe** from [Releases](https://github.com/blackviperxiii-ui/GrokHub-Windows/releases/latest).
+1. Download **GrokHub-Setup-2.9.2.exe** from [Releases](https://github.com/blackviperxiii-ui/GrokHub-Windows/releases/latest).
 2. Run it (no admin). Installs to `%LOCALAPPDATA%\Programs\GrokHub`.
 3. Launch GrokHub. Close hides to the tray; Quit from the tray.
 
