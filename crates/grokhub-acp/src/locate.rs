@@ -169,9 +169,9 @@ fn cabin_config_root() -> Option<PathBuf> {
 
 pub fn doctor_missing_hint() -> &'static str {
     if cfg!(windows) {
-        "Grok Build CLI missing — irm https://x.ai/cli/install.ps1 | iex"
+        "Grok Build CLI missing — $env:GROK_CHANNEL='alpha'; irm https://x.ai/cli/install.ps1 | iex"
     } else {
-        "Grok Build CLI missing — install from x.ai/cli"
+        "Grok Build CLI missing — curl -fsSL https://x.ai/cli/install.sh | GROK_CHANNEL=alpha bash"
     }
 }
 
@@ -331,7 +331,7 @@ pub fn doctor_line_busy() -> bool {
 
 pub fn doctor_grok_line(bin: Option<&Path>) -> (bool, String) {
     if bin.is_none() {
-        return (false, "Grok Build CLI missing — install from x.ai/cli".into());
+        return (false, doctor_missing_hint().into());
     }
     if let Ok(held) = doctor_line_cache().lock() {
         if let Some((path, at, ok, text, inflight)) = held.as_ref() {
@@ -353,7 +353,7 @@ pub fn doctor_grok_line(bin: Option<&Path>) -> (bool, String) {
     };
     thread::spawn(move || {
         let (ok, text) = match &path {
-            None => (false, "Grok Build CLI missing — install from x.ai/cli".into()),
+            None => (false, doctor_missing_hint().into()),
             Some(p) => match grok_version(p) {
                 Ok(v) => (true, format!("Grok Build {v}")),
                 Err(e) => (false, format!("Grok Build present but unreadable: {e}")),
@@ -596,6 +596,7 @@ mod tests {
         let (ok, text) = doctor_grok_line(None);
         assert!(!ok);
         assert!(text.contains("x.ai/cli"));
+        assert!(text.contains("alpha"), "{text}");
         let src = include_str!("locate.rs");
         let ver = src
             .split("pub fn grok_version(")
@@ -811,6 +812,67 @@ mod tests {
         assert_eq!(
             parse_grok_auth_key(r#"{"access_token":"top-level"}"#).as_deref(),
             Some("top-level")
+        );
+    }
+
+    #[test]
+    fn live_alpha_cli_accepts_cabin_flags() {
+        let bin = std::env::var("GROKHUB_GROK")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| which("grok"))
+            .or_else(|| {
+                let p = PathBuf::from("/tmp/grok-alpha-inspect/grok");
+                p.is_file().then_some(p)
+            });
+        let Some(bin) = bin else {
+            return;
+        };
+        let out = std::process::Command::new(&bin)
+            .arg("--help")
+            .output()
+            .expect("grok --help");
+        let help = String::from_utf8_lossy(&out.stdout);
+        let err = String::from_utf8_lossy(&out.stderr);
+        let text = format!("{help}\n{err}");
+        for needle in [
+            "-p, --single",
+            "streaming-json",
+            "--sandbox",
+            "--permission-mode",
+            "--reasoning-effort",
+            "--leader-socket",
+            "--always-approve",
+            "--resume",
+            "--rules",
+        ] {
+            assert!(
+                text.contains(needle),
+                "Grok Build CLI alpha must still accept cabin flag {needle}: {text}"
+            );
+        }
+        let upd = std::process::Command::new(&bin)
+            .args(["update", "--help"])
+            .output()
+            .expect("grok update --help");
+        let upd_text = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&upd.stdout),
+            String::from_utf8_lossy(&upd.stderr)
+        );
+        assert!(
+            upd_text.contains("--alpha"),
+            "grok update must expose --alpha: {upd_text}"
+        );
+        let ver = std::process::Command::new(&bin)
+            .arg("--version")
+            .output()
+            .expect("grok --version");
+        let ver_text = String::from_utf8_lossy(&ver.stdout);
+        assert!(
+            ver_text.contains("1.0.21") || ver_text.contains("1.0.2") || ver_text.contains("grok "),
+            "unexpected grok version: {ver_text}"
         );
     }
 }

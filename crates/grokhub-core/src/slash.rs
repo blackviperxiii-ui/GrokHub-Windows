@@ -574,7 +574,7 @@ pub fn slash_help() -> String {
         "/recall <q> — search memory, learned insights, and chats",
         "/forget <topic> — drop memory lines that mention the topic (whole words)",
         "/imagine <prompt>",
-        "/update — overlay install, then `grok update` on the current channel. Restart on Settings.",
+        "/update — overlay install from GitHub, then `grok update --alpha`. Restart on Settings.",
         "/send <task> — task this box",
         "/sync — merge chats and memory with paired computers",
         "/hub — devices / pair",
@@ -605,7 +605,7 @@ pub fn slash_help() -> String {
         "Settings → Behavior: close to tray, living wall, quiet hours, automations a day, host commands an hour.",
         "Appearance: Dark, Light, System. Interactive chat is grok agent stdio (ACP). Night and phone use grok -p. Halt is session/cancel.",
         "Voice: OAuth for STT/TTS; duplex streams PCM with a console key. Desktop control is Grok Build computer-use — Halt cancels the ACP turn.",
-        "install.sh installs the Grok Build CLI (grok) from https://x.ai/cli. Settings shows grok --version. Cabin overlay updates the GUI, installs grok if missing, then runs grok update on the current channel.",
+        "install.sh installs the Grok Build CLI (grok) alpha from https://x.ai/cli (GROK_CHANNEL=alpha). Settings shows grok --version. Cabin overlay pulls GitHub, installs grok if missing, then runs grok update --alpha.",
         "× to tray; a pinned taskbar click or second grokhub raises the cabin.",
         "Pulse every 15s. Hidden idle waits for the pulse.",
         "Devices pair URL is a LAN IPv4. Expired pair codes hide and rotate. Hub complete is owner-only.",
@@ -745,6 +745,8 @@ mod tests {
         assert!(slash_help().contains("/sync — merge chats and memory"));
         assert!(slash_help().contains("Expired pair codes hide and rotate"));
         assert!(slash_help().contains("x.ai/cli"));
+        assert!(slash_help().contains("GROK_CHANNEL=alpha"));
+        assert!(slash_help().contains("grok update --alpha"));
         assert!(slash_help().contains("pinned taskbar click"));
         assert_eq!(parse_slash("/plan"), Some(Slash::Plan));
         assert_eq!(parse_slash("/always-approve"), Some(Slash::AlwaysApprove));

@@ -362,7 +362,7 @@ pub use update::{
     origin_needs_retarget, stale_github_origin, systemd_user_restart_args, systemd_user_stop_args,
     update_cmds,
     update_plan_steps, update_progress_pct, update_step_label, update_wipes_config, walk_up_source,
-    OverlayUpdateView, RestartAct, GITHUB_REMOTE_URL, ORIGIN_REMOTE_URL,
+    OverlayUpdateView, RestartAct, GITHUB_REMOTE_URL, GROK_CLI_UPDATE_CMD, ORIGIN_REMOTE_URL,
 };
 
 pub const PRESENCE_PUSH_MIN_MS: u64 = 400;

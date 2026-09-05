@@ -19,8 +19,8 @@ function Save-Grok([string]$Url, [string]$OutFile) {
 try {
   $ver = $null
   foreach ($u in @(
-      'https://x.ai/cli/stable',
-      'https://storage.googleapis.com/grok-build-public-artifacts/cli/stable'
+      'https://x.ai/cli/alpha',
+      'https://storage.googleapis.com/grok-build-public-artifacts/cli/alpha'
     )) {
     try {
       $cand = Get-GrokVersion $u
@@ -30,7 +30,7 @@ try {
       }
     } catch {}
   }
-  if (-not $ver) { throw 'could not resolve Grok Build version from x.ai/cli/stable' }
+  if (-not $ver) { throw 'could not resolve Grok Build version from x.ai/cli/alpha' }
   $out = Join-Path $DestDir 'grok.exe'
   $ok = $false
   foreach ($url in @(
